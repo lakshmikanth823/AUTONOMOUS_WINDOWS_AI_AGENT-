@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from agent.tools.base import ToolResult
@@ -306,7 +306,77 @@ class Verifier:
             status=VerificationStatus.VERIFIED,
         )
 
-    def _verify_computer(
+    def _check_semantic_assertions(
+        self,
+        elements_data: Dict[str, Any],
+        args: Dict[str, Any],
+        expected: str,
+    ) -> Tuple[bool, str]:
+        """Validate semantic UI state assertions against element data."""
+        elements = elements_data.get("elements", [])
+        window = elements_data.get("window", {})
+        win_title = window.get("title", "")
+
+        # 1. Expected window active
+        exp_win = args.get("expected_window_active")
+        if exp_win:
+            if exp_win.lower() not in win_title.lower():
+                return False, f"Expected active window title to contain '{exp_win}', but found '{win_title}'."
+
+        # 2. Expected element present
+        exp_present = args.get("expected_element_present")
+        if exp_present:
+            q = exp_present.lower()
+            found = False
+            for el in elements:
+                name = el.get("name", "").lower()
+                ctype = el.get("control_type", "").lower()
+                auto_id = el.get("automation_id", "").lower()
+                if q in name or q == ctype or q == auto_id:
+                    found = True
+                    break
+            if not found:
+                return False, f"Expected UI element '{exp_present}' to be present, but it was not found in active window."
+
+        # 3. Expected element absent
+        exp_absent = args.get("expected_element_absent")
+        if exp_absent:
+            q = exp_absent.lower()
+            for el in elements:
+                name = el.get("name", "").lower()
+                auto_id = el.get("automation_id", "").lower()
+                if q in name or q == auto_id:
+                    return False, f"Expected UI element '{exp_absent}' to be absent, but it was found in active window."
+
+        # 4. Expected element enabled
+        exp_enabled = args.get("expected_element_enabled")
+        if exp_enabled:
+            q = exp_enabled.lower()
+            matching = [
+                el for el in elements
+                if q in el.get("name", "").lower() or q == el.get("control_type", "").lower() or q == el.get("automation_id", "").lower()
+            ]
+            if not matching:
+                return False, f"Cannot verify enabled state: element '{exp_enabled}' not found."
+            if not any(el.get("enabled", False) for el in matching):
+                return False, f"Expected UI element '{exp_enabled}' to be enabled, but it is disabled."
+
+        # 5. Expected element focused
+        exp_focused = args.get("expected_element_focused")
+        if exp_focused:
+            q = exp_focused.lower()
+            matching = [
+                el for el in elements
+                if q in el.get("name", "").lower() or q == el.get("control_type", "").lower() or q == el.get("automation_id", "").lower()
+            ]
+            if not matching:
+                return False, f"Cannot verify focus state: element '{exp_focused}' not found."
+            if not any(el.get("focused", False) for el in matching):
+                return False, f"Expected UI element '{exp_focused}' to have keyboard focus, but it is not focused."
+
+        return True, "All semantic UI assertions satisfied."
+
+    def _verify_computer_core(
         self,
         action: str,
         args: Dict[str, Any],
@@ -594,6 +664,34 @@ class Verifier:
                 verification="Window details missing required fields.",
                 status=VerificationStatus.FAILED,
             )
+        elif action in ("ui_elements", "ui_tree"):
+            if not (isinstance(out, dict) and "elements" in out and "window" in out):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="UIA observation output missing required 'window' or 'elements' keys.",
+                    status=VerificationStatus.FAILED,
+                )
+            passed, reason = self._check_semantic_assertions(out, args, expected)
+            if not passed:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"UIA observation semantic verification failed: {reason}",
+                    status=VerificationStatus.FAILED,
+                )
+            win_title = (out.get("window") or {}).get("title", "<none>")
+            count = out.get("element_count", len(out.get("elements", [])))
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"UIA observation verified: {count} elements in window '{win_title}'. {reason}",
+                status=VerificationStatus.VERIFIED,
+            )
+
         # Fallback for other actions
         return VerificationRecord(
             action=action,
@@ -602,6 +700,47 @@ class Verifier:
             verification=f"Computer action '{action}' verified.",
             status=VerificationStatus.VERIFIED,
         )
+
+    def _verify_computer(
+        self,
+        action: str,
+        args: Dict[str, Any],
+        result: ToolResult,
+        expected: str,
+    ) -> VerificationRecord:
+        """Verify computer action with syntactic checks and optional live semantic assertions."""
+        record = self._verify_computer_core(action, args, result, expected)
+        if record.status == VerificationStatus.VERIFIED and action not in ("ui_elements", "ui_tree"):
+            semantic_keys = (
+                "expected_element_present",
+                "expected_element_absent",
+                "expected_element_enabled",
+                "expected_element_focused",
+                "expected_window_active",
+            )
+            if any(k in args for k in semantic_keys):
+                try:
+                    from agent.tools.uia import UIAClient
+                    live_data = UIAClient().get_active_window_elements()
+                    passed, reason = self._check_semantic_assertions(live_data, args, expected)
+                    if not passed:
+                        return VerificationRecord(
+                            action=action,
+                            expected_result=expected,
+                            observation=live_data,
+                            verification=f"Action '{action}' executed but live semantic verification failed: {reason}",
+                            status=VerificationStatus.FAILED,
+                        )
+                    record.verification += f" [Live state verified: {reason}]"
+                except Exception as e:
+                    return VerificationRecord(
+                        action=action,
+                        expected_result=expected,
+                        observation=record.observation,
+                        verification=f"Action '{action}' executed but live state inspection failed: {e}",
+                        status=VerificationStatus.FAILED,
+                    )
+        return record
 
 
 # Global default verifier instance

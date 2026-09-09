@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
 from agent.tools.base import Tool, ToolResult
+from agent.tools.uia import UIAClient
 
 # Virtual key mappings for named control and navigation keys
 VIRTUAL_KEYS: Dict[str, int] = {
@@ -83,6 +84,8 @@ class ComputerTool(Tool):
                     "hotkey",
                     "window_list",
                     "window_focus",
+                    "ui_elements",
+                    "ui_tree",
                 ],
                 "description": "The desktop action or observation to perform",
             },
@@ -111,6 +114,9 @@ class ComputerTool(Tool):
                 "description": "List of key names for hotkey combo (e.g. ['ctrl', 's'], ['alt', 'f4'])",
             },
             "path": {"type": "string", "description": "Path to save screenshot"},
+            "hwnd": {"type": "integer", "description": "Target window handle for window operations or UIA inspection"},
+            "max_elements": {"type": "integer", "description": "Maximum number of UI elements to return (default: 100)"},
+            "control_type": {"type": "string", "description": "Filter UI elements by control type (e.g. Button, Edit, MenuItem)"},
         },
         "required": ["action"],
     }
@@ -137,6 +143,7 @@ class ComputerTool(Tool):
         self.kernel32.GlobalUnlock.restype = wintypes.BOOL
         self.kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
         self.kernel32.GlobalFree.restype = wintypes.HGLOBAL
+        self.uia = UIAClient()
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
@@ -721,6 +728,27 @@ class ComputerTool(Tool):
                     info = self._get_active_window_info()
                     return ToolResult(success=True, output=info)
                 return ToolResult(success=False, error=f"Window matching '{query}' not found.")
+
+            elif action in ("ui_elements", "ui_tree"):
+                hwnd_val = args.get("hwnd")
+                target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                max_elems = int(args.get("max_elements", 100))
+                ctype_filter = args.get("control_type")
+                if ctype_filter:
+                    ctype_filter = str(ctype_filter).strip()
+
+                uia_res = self.uia.get_active_window_elements(
+                    hwnd=target_hwnd,
+                    max_elements=max_elems,
+                    control_type_filter=ctype_filter,
+                )
+                if uia_res.get("error") and not uia_res.get("elements"):
+                    return ToolResult(
+                        success=False,
+                        error=uia_res["error"],
+                        output=uia_res,
+                    )
+                return ToolResult(success=True, output=uia_res)
 
             else:
                 return ToolResult(success=False, error=f"Unknown computer action: '{action}'")

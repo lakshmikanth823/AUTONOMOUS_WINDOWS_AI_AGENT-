@@ -360,6 +360,41 @@ class Agent:
                 state.tools_used.add(step.tool_required)
                 state.total_tool_calls += 1
 
+                # Dynamic coordinate resolution from semantic target if x, y omitted
+                if (
+                    step.tool_required == "computer"
+                    and effective_args.get("action") in ("mouse_click", "double_click", "right_click", "mouse_move")
+                    and (effective_args.get("x") is None or effective_args.get("y") is None)
+                ):
+                    target_query = effective_args.get("target_element") or effective_args.get("element_name")
+                    if target_query:
+                        resolved_coords = None
+                        for prev_act in reversed(state.actions):
+                            if prev_act.tool_name == "computer" and isinstance(prev_act.output, dict):
+                                for elem in prev_act.output.get("elements", []):
+                                    el_name = elem.get("name", "").lower()
+                                    el_type = elem.get("control_type", "").lower()
+                                    if target_query.lower() in el_name or target_query.lower() == el_type:
+                                        resolved_coords = elem.get("center")
+                                        break
+                                if resolved_coords:
+                                    break
+                        if not resolved_coords:
+                            try:
+                                from agent.tools.uia import UIAClient
+                                el = UIAClient().find_element(target_query)
+                                if el:
+                                    resolved_coords = el.get("center")
+                            except Exception:
+                                pass
+
+                        if resolved_coords and len(resolved_coords) == 2:
+                            effective_args["x"] = resolved_coords[0]
+                            effective_args["y"] = resolved_coords[1]
+                            logger.info(
+                                f"Dynamically resolved semantic target '{target_query}' to coordinates ({resolved_coords[0]}, {resolved_coords[1]})."
+                            )
+
                 action_id = f"act_{uuid.uuid4().hex[:8]}"
                 logger.info(
                     f"FSM State [EXECUTING]: {step.step_id} ({action_id}) -> "
