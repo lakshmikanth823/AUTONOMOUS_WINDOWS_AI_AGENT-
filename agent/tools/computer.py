@@ -118,6 +118,25 @@ class ComputerTool(Tool):
     def __init__(self) -> None:
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
+        # Set ctypes prototypes for Win32 API calls
+        self.user32.OpenClipboard.argtypes = [wintypes.HWND]
+        self.user32.OpenClipboard.restype = wintypes.BOOL
+        self.user32.CloseClipboard.argtypes = []
+        self.user32.CloseClipboard.restype = wintypes.BOOL
+        self.user32.EmptyClipboard.argtypes = []
+        self.user32.EmptyClipboard.restype = wintypes.BOOL
+        self.user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        self.user32.SetClipboardData.restype = wintypes.HANDLE
+        self.user32.GetClipboardData.argtypes = [wintypes.UINT]
+        self.user32.GetClipboardData.restype = wintypes.HANDLE
+        self.kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        self.kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        self.kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        self.kernel32.GlobalLock.restype = wintypes.LPVOID
+        self.kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        self.kernel32.GlobalUnlock.restype = wintypes.BOOL
+        self.kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        self.kernel32.GlobalFree.restype = wintypes.HGLOBAL
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
@@ -539,8 +558,192 @@ class ComputerTool(Tool):
 
                 return ToolResult(success=False, error=f"Window matching '{query}' not found.")
 
+            # -----------------------------------
+            # New extended actions
+            # -----------------------------------
+            elif action == "read_window_text":
+                # Return title and (if possible) window text via WM_GETTEXT
+                query = text.strip()
+                if not query:
+                    # Use active window if no query provided
+                    win_info = self._get_active_window_info()
+                else:
+                    # Find window by title substring
+                    win_info = None
+                    # Reuse existing enumeration logic to locate window
+                    matching_windows: List[Tuple[int, str]] = []
+                    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                    def enum_find(hwnd: wintypes.HWND, lparam: wintypes.LPARAM) -> bool:
+                        if self.user32.IsWindowVisible(hwnd):
+                            length = self.user32.GetWindowTextLengthW(hwnd)
+                            if length > 0:
+                                buff = ctypes.create_unicode_buffer(length + 1)
+                                self.user32.GetWindowTextW(hwnd, buff, length + 1)
+                                val = buff.value.strip()
+                                if query.lower() in val.lower():
+                                    matching_windows.append((int(hwnd), val))
+                        return True
+                    cb = WNDENUMPROC(enum_find)
+                    self.user32.EnumWindows(cb, 0)
+                    if matching_windows:
+                        hwnd, _ = matching_windows[0]
+                        # Bring to foreground to ensure reliable info
+                        self._bring_window_to_foreground(hwnd)
+                        win_info = self._get_active_window_info()
+                if not win_info:
+                    return ToolResult(success=False, error="Unable to locate window for reading text.")
+                # Attempt to get window text via WM_GETTEXT (may be limited to title)
+                hwnd = win_info.get("hwnd")
+                if not hwnd:
+                    return ToolResult(success=False, error="Window handle not found.")
+                # Allocate buffer for text
+                length = self.user32.GetWindowTextLengthW(hwnd) + 1
+                buf = ctypes.create_unicode_buffer(length)
+                self.user32.GetWindowTextW(hwnd, buf, length)
+                window_text = buf.value
+                return ToolResult(success=True, output={"title": win_info.get("title"), "text": window_text})
+
+            elif action == "region_screenshot":
+                # Expect x, y, width, height
+                if x is None or y is None:
+                    return ToolResult(success=False, error="Parameters 'x' and 'y' are required for region_screenshot.")
+                width_arg = args.get("width")
+                height_arg = args.get("height")
+                if width_arg is None or height_arg is None:
+                    return ToolResult(success=False, error="Parameters 'width' and 'height' are required for region_screenshot.")
+                try:
+                    x_int = int(x)
+                    y_int = int(y)
+                    w_int = int(width_arg)
+                    h_int = int(height_arg)
+                except ValueError:
+                    return ToolResult(success=False, error="Invalid numeric parameters for region_screenshot.")
+                bbox = (x_int, y_int, x_int + w_int, y_int + h_int)
+                save_path = Path(output_path) if output_path else settings.data_dir / "region_screenshot.png"
+                # Ensure interactive desktop attached for capture
+                hdesk = self._attach_interactive_desktop()
+                try:
+                    from PIL import ImageGrab
+                    img = ImageGrab.grab(bbox=bbox)
+                    img.save(save_path)
+                finally:
+                    self._detach_interactive_desktop(hdesk)
+                return ToolResult(success=True, output={"screenshot_path": str(save_path), "region": bbox})
+
+
+
+            elif action == "write_clipboard":
+                clip_text = str(text)
+                max_retries = 3
+                for attempt in range(max_retries + 1):
+                    if self.user32.OpenClipboard(None):
+                        break
+                    err = ctypes.GetLastError()
+                    if err != 5:
+                        return ToolResult(success=False, error="Failed to open clipboard (non-transient error).")
+                    if attempt == max_retries:
+                        return ToolResult(success=False, error="Clipboard unavailable after retries.")
+                    time.sleep(0.2)
+                try:
+                    self.user32.EmptyClipboard()
+                    wtext = (clip_text + "\0").encode("utf-16le")
+                    GMEM_MOVEABLE = 0x0002
+                    hglobal = self.kernel32.GlobalAlloc(GMEM_MOVEABLE, len(wtext))
+                    if not hglobal:
+                        return ToolResult(success=False, error="Global memory allocation failed.")
+                    ptr = self.kernel32.GlobalLock(hglobal)
+                    if not ptr:
+                        self.kernel32.GlobalFree(hglobal)
+                        return ToolResult(success=False, error="Failed to lock global memory.")
+                    ctypes.memmove(ptr, wtext, len(wtext))
+                    self.kernel32.GlobalUnlock(hglobal)
+                    if not self.user32.SetClipboardData(13, hglobal):
+                        self.kernel32.GlobalFree(hglobal)
+                        return ToolResult(success=False, error="Failed to set clipboard data.")
+                finally:
+                    self.user32.CloseClipboard()
+                verification = self._read_clipboard_utf16()
+                if verification != clip_text:
+                    return ToolResult(success=False, error="Clipboard verification failed.")
+                return ToolResult(success=True, output={"written": True, "text": clip_text, "verified": True})
+
+            elif action == "mouse_drag":
+                # Parameters: start_x, start_y, end_x, end_y, duration_ms (optional)
+                sx = args.get("start_x")
+                sy = args.get("start_y")
+                ex = args.get("end_x")
+                ey = args.get("end_y")
+                if sx is None or sy is None or ex is None or ey is None:
+                    return ToolResult(success=False, error="Parameters start_x, start_y, end_x, end_y are required for mouse_drag.")
+                try:
+                    sx_i = int(sx)
+                    sy_i = int(sy)
+                    ex_i = int(ex)
+                    ey_i = int(ey)
+                except ValueError:
+                    return ToolResult(success=False, error="Invalid numeric parameters for mouse_drag.")
+                duration_ms = int(args.get("duration_ms", 0))
+                # Move to start and press left button down
+                self.user32.SetCursorPos(sx_i, sy_i)
+                self.user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+                if duration_ms > 0:
+                    time.sleep(duration_ms / 1000.0)
+                # Move to end
+                self.user32.SetCursorPos(ex_i, ey_i)
+                # Release button
+                self.user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+                return ToolResult(success=True, output={"dragged": True, "start": [sx_i, sy_i], "end": [ex_i, ey_i]})
+
+            elif action == "window_details":
+                # Optional query parameter similar to window_focus
+                query = text.strip()
+                if not query:
+                    info = self._get_active_window_info()
+                    return ToolResult(success=True, output=info)
+                # Find matching window as in window_focus
+                matching_windows: List[Tuple[int, str]] = []
+                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                def enum_find(hwnd: wintypes.HWND, lparam: wintypes.LPARAM) -> bool:
+                    if self.user32.IsWindowVisible(hwnd):
+                        length = self.user32.GetWindowTextLengthW(hwnd)
+                        if length > 0:
+                            buff = ctypes.create_unicode_buffer(length + 1)
+                            self.user32.GetWindowTextW(hwnd, buff, length + 1)
+                            val = buff.value.strip()
+                            if query.lower() in val.lower():
+                                matching_windows.append((int(hwnd), val))
+                    return True
+                cb = WNDENUMPROC(enum_find)
+                self.user32.EnumWindows(cb, 0)
+                if matching_windows:
+                    hwnd, _ = matching_windows[0]
+                    self._bring_window_to_foreground(hwnd)
+                    info = self._get_active_window_info()
+                    return ToolResult(success=True, output=info)
+                return ToolResult(success=False, error=f"Window matching '{query}' not found.")
+
             else:
                 return ToolResult(success=False, error=f"Unknown computer action: '{action}'")
 
         except Exception as e:
             return ToolResult(success=False, error=f"Computer interaction error: {e}")
+    def _read_clipboard_utf16(self) -> str:
+        """Read Unicode text from the clipboard.
+        Returns empty string on any failure."""
+        if not self.user32.OpenClipboard(None):
+            return ""
+        try:
+            CF_UNICODETEXT = 13
+            hdata = self.user32.GetClipboardData(CF_UNICODETEXT)
+            if not hdata:
+                return ""
+            ptr = self.kernel32.GlobalLock(hdata)
+            if not ptr:
+                return ""
+            try:
+                data = ctypes.wstring_at(ptr)
+                return data.rstrip('\x00')
+            finally:
+                self.kernel32.GlobalUnlock(hdata)
+        finally:
+            self.user32.CloseClipboard()

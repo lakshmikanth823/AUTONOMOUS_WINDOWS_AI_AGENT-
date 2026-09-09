@@ -510,6 +510,91 @@ class Verifier:
                 status=VerificationStatus.FAILED,
             )
 
+        # Verification for extended computer actions
+        if action == "read_window_text":
+            if isinstance(out, dict) and "title" in out and "text" in out:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Read window text: title='{out.get('title')}'.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Missing title or text in read_window_text output.",
+                status=VerificationStatus.FAILED,
+            )
+        elif action == "region_screenshot":
+            if isinstance(out, dict) and "screenshot_path" in out:
+                p = Path(out["screenshot_path"])
+                if p.exists() and p.stat().st_size > 0:
+                    return VerificationRecord(
+                        action=action,
+                        expected_result=expected,
+                        observation=out,
+                        verification=f"Region screenshot saved at '{p}'.",
+                        status=VerificationStatus.VERIFIED,
+                    )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Region screenshot file missing or empty.",
+                status=VerificationStatus.FAILED,
+            )
+        elif action == "write_clipboard":
+            if isinstance(out, dict) and out.get("written") is True and out.get("verified") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Clipboard write and verification succeeded.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Clipboard write failed or verification mismatch.",
+                status=VerificationStatus.FAILED,
+            )
+        elif action == "mouse_drag":
+            if isinstance(out, dict) and out.get("dragged") is True and "end" in out:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Mouse dragged to {out.get('end')}.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Mouse drag did not report success.",
+                status=VerificationStatus.FAILED,
+            )
+        elif action == "window_details":
+            required = {"hwnd", "title", "process_name", "rect"}
+            if isinstance(out, dict) and required.issubset(out.keys()):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Window details contain all required metadata.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Window details missing required fields.",
+                status=VerificationStatus.FAILED,
+            )
+        # Fallback for other actions
         return VerificationRecord(
             action=action,
             expected_result=expected,

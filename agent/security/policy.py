@@ -316,6 +316,11 @@ class SecurityPolicy:
                 "type_text",
                 "press_key",
                 "hotkey",
+                "read_window_text",
+                "region_screenshot",
+                "write_clipboard",
+                "mouse_drag",
+                "window_details",
             }
             if action not in known_computer_actions:
                 return SecurityEvaluation(
@@ -334,6 +339,12 @@ class SecurityPolicy:
             elif action in ("observe", "screenshot", "window_list", "mouse_move"):
                 computed_level = PermissionLevel.SAFE
                 reason = f"Desktop observation/cursor positioning: {action}"
+            elif action in ("read_window_text", "region_screenshot", "write_clipboard", "window_details"):
+                computed_level = PermissionLevel.SAFE
+                reason = f"Desktop observation/action: {action}"
+            elif action == "mouse_drag":
+                computed_level = PermissionLevel.LOW_RISK
+                reason = f"Desktop UI interaction: {action}"
             else:
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Desktop interaction: {action}"
