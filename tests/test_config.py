@@ -10,7 +10,7 @@ from agent.config.permissions import (
     classify_command_permission,
 )
 from agent.config.settings import Settings, get_settings
-from agent.core.state import Task, TaskStatus
+from agent.core.state import TaskState, TaskStateEnum
 from agent.exceptions import (
     AgentError,
     ConfigError,
@@ -115,23 +115,23 @@ def test_can_auto_execute():
 # ==============================================================================
 
 def test_task_creation_and_attributes():
-    """Verify Task model structure, default values, and required attributes."""
-    task = Task(user_goal="Audit Windows environment")
+    """Verify TaskState model structure, default values, and required attributes."""
+    task = TaskState(user_goal="Audit Windows environment")
 
     assert task.task_id.startswith("task_")
     assert task.user_goal == "Audit Windows environment"
-    assert task.status == TaskStatus.PENDING
+    assert task.status == TaskStateEnum.RECEIVED
     assert isinstance(task.created_at, str)
     assert isinstance(task.updated_at, str)
-    assert task.current_step == 0
-    assert isinstance(task.plan, list)
-    assert isinstance(task.results, list)
+    assert task.current_step_index == 0
+    assert task.plan is None
+    assert isinstance(task.actions, list)
     assert isinstance(task.errors, list)
 
 
 def test_task_mark_updated():
     """Verify task timestamp updates upon modification."""
-    task = Task(user_goal="Update test")
+    task = TaskState(user_goal="Update test")
     initial_time = task.updated_at
     task.mark_updated()
     assert task.updated_at >= initial_time
@@ -242,8 +242,9 @@ def test_exception_hierarchy():
 # 7. CLI Command Dispatcher Tests
 # ==============================================================================
 
-def test_cli_commands():
+def test_cli_commands(monkeypatch):
     """Verify CLI subcommands execute cleanly."""
+    monkeypatch.setattr("agent.main.handle_approval", lambda step: True)
     assert main(["status"]) == 0
     assert main(["tools"]) == 0
     assert main(["config"]) == 0

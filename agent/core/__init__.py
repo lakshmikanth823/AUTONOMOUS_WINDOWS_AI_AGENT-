@@ -1,6 +1,6 @@
 """Core orchestration, planning, verification, and recovery components."""
 
-from agent.core.agent import Agent, TaskState
+from agent.core.agent import Agent
 from agent.core.planner import Decision, Plan, Planner, PlanStep
 from agent.core.recovery import (
     FailureCategory,
@@ -10,14 +10,11 @@ from agent.core.recovery import (
     RetryPolicy,
 )
 from agent.core.state import (
-    AgentState,
-    AgentStatus,
     StepResult,
-    Subtask,
     Task,
     TaskExecutionReport,
     TaskLimits,
-    TaskPlan,
+    TaskState,
     TaskStateEnum,
     TaskStatus,
 )
@@ -32,19 +29,15 @@ __all__ = [
     "Agent",
     "TaskState",
     "TaskStateEnum",
+    "TaskStatus",
     "TaskLimits",
     "TaskExecutionReport",
+    "StepResult",
     "Planner",
     "Plan",
     "PlanStep",
     "Decision",
     "Task",
-    "TaskStatus",
-    "AgentState",
-    "AgentStatus",
-    "StepResult",
-    "Subtask",
-    "TaskPlan",
     "Verifier",
     "VerificationRecord",
     "VerificationStatus",

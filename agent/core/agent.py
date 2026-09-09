@@ -22,6 +22,7 @@ from agent.core.state import (
     StepResult,
     TaskExecutionReport,
     TaskLimits,
+    TaskState,
     TaskStateEnum,
 )
 from agent.core.verifier import (
@@ -38,68 +39,8 @@ from agent.logger import get_task_logger
 from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry, registry as default_registry
 
-
-class TaskState(BaseModel):
-    """Execution state tracking the finite-state machine, limits, observations, and audit artifacts."""
-
-    task_id: str = Field(default_factory=lambda: f"task_{uuid.uuid4().hex[:10]}")
-    user_goal: str
-    status: TaskStateEnum = Field(default=TaskStateEnum.RECEIVED)
-    plan: Optional[Plan] = None
-    current_step_index: int = 0
-    current_step_id: Optional[str] = None
-    actions: List[StepResult] = Field(default_factory=list)
-    verification_records: List[VerificationRecord] = Field(default_factory=list)
-    approvals_requested: List[Dict[str, Any]] = Field(default_factory=list)
-    tools_used: Set[str] = Field(default_factory=set)
-    artifacts_created: List[str] = Field(default_factory=list)
-    errors_and_recoveries: List[Dict[str, Any]] = Field(default_factory=list)
-    remaining_issues: List[str] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
-    retry_counts: Dict[str, int] = Field(default_factory=dict)
-    total_tool_calls: int = 0
-    total_tokens_used: int = 0
-    start_time: float = Field(default_factory=time.perf_counter)
-    end_time: Optional[float] = None
-    duration_seconds: float = 0.0
-    is_paused: bool = False
-    is_cancelled: bool = False
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-
-    # Compatibility alias
-    @property
-    def observations(self) -> List[StepResult]:
-        return self.actions
-
-    def mark_updated(self) -> None:
-        self.updated_at = datetime.now(timezone.utc).isoformat()
-
-    def generate_report(self) -> TaskExecutionReport:
-        """Produce a consolidated execution report."""
-        duration = self.duration_seconds
-        if duration == 0.0 and self.start_time:
-            duration = time.perf_counter() - self.start_time
-
-        return TaskExecutionReport(
-            task_id=self.task_id,
-            goal=self.user_goal,
-            final_status=self.status,
-            plan=self.plan,
-            tools_used=sorted(list(self.tools_used)),
-            approvals_requested=self.approvals_requested,
-            actions=self.actions,
-            verification_results=self.verification_records,
-            errors_and_recoveries=self.errors_and_recoveries,
-            artifacts_created=self.artifacts_created,
-            remaining_issues=self.remaining_issues,
-            duration_seconds=round(duration, 3),
-            total_tool_calls=self.total_tool_calls,
-        )
+# Re-export for backward compatibility
+__all__ = ["Agent", "TaskState"]
 
 
 class Agent:

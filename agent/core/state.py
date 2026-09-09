@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -29,9 +30,8 @@ class TaskStateEnum(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-# Backward-compatible aliases
+# Backward-compatible alias
 TaskStatus = TaskStateEnum
-AgentStatus = TaskStateEnum
 
 
 class TaskLimits(BaseModel):
@@ -42,20 +42,6 @@ class TaskLimits(BaseModel):
     max_execution_time_seconds: float = Field(default=300.0, description="Overall task timeout")
     max_tool_calls: int = Field(default=50, description="Maximum tool invocations")
     max_tokens: int = Field(default=100000, description="Maximum token consumption")
-
-
-class Subtask(BaseModel):
-    """An individual unit of work in a multi-step execution plan."""
-
-    id: str = Field(default_factory=lambda: f"subtask_{uuid.uuid4().hex[:8]}")
-    title: str
-    description: str
-    dependencies: List[str] = Field(default_factory=list)
-    required_tools: List[str] = Field(default_factory=list)
-    status: str = Field(default="pending")
-    retry_count: int = Field(default=0)
-    result: Optional[str] = None
-    error: Optional[str] = None
 
 
 class StepResult(BaseModel):
@@ -73,14 +59,6 @@ class StepResult(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-
-
-class TaskPlan(BaseModel):
-    """Structured plan generated for a user goal."""
-
-    goal: str
-    summary: str
-    subtasks: List[Subtask] = Field(default_factory=list)
 
 
 class TaskExecutionReport(BaseModel):
@@ -155,37 +133,31 @@ class TaskExecutionReport(BaseModel):
         return "\n".join(lines)
 
 
-class Task(BaseModel):
-    """Core task tracking model."""
+class TaskState(BaseModel):
+    """Execution state tracking the finite-state machine, limits, observations, and audit artifacts."""
 
     task_id: str = Field(default_factory=lambda: f"task_{uuid.uuid4().hex[:10]}")
     user_goal: str
-    status: TaskStateEnum = Field(default=TaskStateEnum.PENDING)
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    current_step: int = 0
-    plan: List[Dict[str, Any]] = Field(default_factory=list)
-    results: List[Dict[str, Any]] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
-
-    def mark_updated(self) -> None:
-        self.updated_at = datetime.now(timezone.utc).isoformat()
-
-
-class AgentState(BaseModel):
-    """Comprehensive state of an agent executing a user goal."""
-
-    task_id: str = Field(default_factory=lambda: f"task_{uuid.uuid4().hex[:12]}")
-    user_goal: str
     status: TaskStateEnum = Field(default=TaskStateEnum.RECEIVED)
-    plan: Optional[TaskPlan] = None
-    current_subtask_id: Optional[str] = None
-    action_history: List[StepResult] = Field(default_factory=list)
-    context_variables: Dict[str, Any] = Field(default_factory=dict)
+    plan: Optional[Plan] = None
+    current_step_index: int = 0
+    current_step_id: Optional[str] = None
+    actions: List[StepResult] = Field(default_factory=list)
+    verification_records: List[VerificationRecord] = Field(default_factory=list)
+    approvals_requested: List[Dict[str, Any]] = Field(default_factory=list)
+    tools_used: Set[str] = Field(default_factory=set)
+    artifacts_created: List[str] = Field(default_factory=list)
+    errors_and_recoveries: List[Dict[str, Any]] = Field(default_factory=list)
+    remaining_issues: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    retry_counts: Dict[str, int] = Field(default_factory=dict)
+    total_tool_calls: int = 0
+    total_tokens_used: int = 0
+    start_time: float = Field(default_factory=time.perf_counter)
+    end_time: Optional[float] = None
+    duration_seconds: float = 0.0
+    is_paused: bool = False
+    is_cancelled: bool = False
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -193,5 +165,36 @@ class AgentState(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    # Compatibility alias
+    @property
+    def observations(self) -> List[StepResult]:
+        return self.actions
+
     def mark_updated(self) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def generate_report(self) -> TaskExecutionReport:
+        """Produce a consolidated execution report."""
+        duration = self.duration_seconds
+        if duration == 0.0 and self.start_time:
+            duration = time.perf_counter() - self.start_time
+
+        return TaskExecutionReport(
+            task_id=self.task_id,
+            goal=self.user_goal,
+            final_status=self.status,
+            plan=self.plan,
+            tools_used=sorted(list(self.tools_used)),
+            approvals_requested=self.approvals_requested,
+            actions=self.actions,
+            verification_results=self.verification_records,
+            errors_and_recoveries=self.errors_and_recoveries,
+            artifacts_created=self.artifacts_created,
+            remaining_issues=self.remaining_issues,
+            duration_seconds=round(duration, 3),
+            total_tool_calls=self.total_tool_calls,
+        )
+
+
+# Backward-compatible alias for any legacy callers
+Task = TaskState

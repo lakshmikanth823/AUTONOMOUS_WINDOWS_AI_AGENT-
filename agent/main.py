@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from agent.config.settings import get_settings
-from agent.core.agent import Agent, TaskState
+from agent.core.agent import Agent
 from agent.core.planner import Planner, PlanStep
-from agent.core.state import Task, TaskStatus
+from agent.core.state import TaskState, TaskStateEnum
 from agent.llm.provider import get_llm_provider
 from agent.logger import get_task_logger, init_logger
 from agent.memory import MemoryCategory, default_memory_manager
