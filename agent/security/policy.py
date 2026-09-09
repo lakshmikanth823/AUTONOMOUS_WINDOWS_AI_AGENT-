@@ -323,6 +323,8 @@ class SecurityPolicy:
                 "window_details",
                 "ui_elements",
                 "ui_tree",
+                "set_element_text",
+                "read_element_text",
             }
             if action not in known_computer_actions:
                 return SecurityEvaluation(
@@ -332,13 +334,13 @@ class SecurityPolicy:
                     requires_human=True,
                 )
 
-            if action in ("keyboard_input", "type_text", "press_key", "hotkey"):
+            if action in ("keyboard_input", "type_text", "press_key", "hotkey", "set_element_text"):
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
-                reason = f"Sending keyboard input/keys ('{action}') to Windows desktop requires explicit approval."
+                reason = f"Setting text or sending keyboard input/keys ('{action}') to Windows desktop requires explicit approval."
             elif action in ("mouse_click", "double_click", "right_click", "mouse_scroll", "window_focus"):
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Desktop UI interaction: {action}"
-            elif action in ("observe", "screenshot", "window_list", "mouse_move", "ui_elements", "ui_tree"):
+            elif action in ("observe", "screenshot", "window_list", "mouse_move", "ui_elements", "ui_tree", "read_element_text"):
                 computed_level = PermissionLevel.SAFE
                 reason = f"Desktop observation/cursor positioning: {action}"
             elif action in ("read_window_text", "region_screenshot", "write_clipboard", "window_details"):

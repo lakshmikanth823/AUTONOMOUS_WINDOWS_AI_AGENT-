@@ -29,6 +29,10 @@ kernel32 = ctypes.windll.kernel32
 SysFreeString = oleaut32.SysFreeString
 SysFreeString.argtypes = [c_void_p]
 
+SysAllocString = oleaut32.SysAllocString
+SysAllocString.restype = c_void_p
+SysAllocString.argtypes = [ctypes.c_wchar_p]
+
 
 class GUID(Structure):
     _fields_ = [
@@ -123,6 +127,7 @@ class UIElement(BaseModel):
     automation_id: str = ""
     help_text: str = ""
     depth: int = 1
+    value: str = ""
 
 
 class UIAClient:
@@ -228,6 +233,56 @@ class UIAClient:
 
         user32.EnumWindows(WNDENUMPROC(enum_win), 0)
         return top_hwnd
+
+    def _extract_element_text(self, vtbl_child: Any, p_child: c_void_p) -> str:
+        """Extract text or value from a UI element using TextPattern or ValuePattern."""
+        # 1. TextPattern (UIA_TextPatternId = 10014) for Document and multi-line edit controls
+        try:
+            p_tp = c_void_p()
+            hr_tp = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))(vtbl_child[16])(p_child, 10014, byref(p_tp))
+            if hr_tp == 0 and p_tp.value:
+                try:
+                    vtbl_tp = ctypes.cast(p_tp.value, POINTER(POINTER(c_void_p))).contents
+                    p_range = c_void_p()
+                    # get_DocumentRange (index 7)
+                    hr_dr = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))(vtbl_tp[7])(p_tp, byref(p_range))
+                    if hr_dr == 0 and p_range.value:
+                        try:
+                            vtbl_tr = ctypes.cast(p_range.value, POINTER(POINTER(c_void_p))).contents
+                            p_text = c_void_p()
+                            # GetText (index 12)
+                            hr_gt = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))(vtbl_tr[12])(p_range, -1, byref(p_text))
+                            if hr_gt == 0 and p_text.value:
+                                text_val = ctypes.wstring_at(p_text.value)
+                                SysFreeString(p_text)
+                                return text_val
+                        finally:
+                            self._release(p_range)
+                finally:
+                    self._release(p_tp)
+        except Exception:
+            pass
+
+        # 2. ValuePattern (UIA_ValuePatternId = 10002) for standard single-line Edit, ComboBox, etc.
+        try:
+            p_vp = c_void_p()
+            hr_vp = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))(vtbl_child[16])(p_child, 10002, byref(p_vp))
+            if hr_vp == 0 and p_vp.value:
+                try:
+                    vtbl_vp = ctypes.cast(p_vp.value, POINTER(POINTER(c_void_p))).contents
+                    p_val = c_void_p()
+                    # get_CurrentValue (index 4)
+                    hr_v = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))(vtbl_vp[4])(p_vp, byref(p_val))
+                    if hr_v == 0 and p_val.value:
+                        val_str = ctypes.wstring_at(p_val.value)
+                        SysFreeString(p_val)
+                        return val_str
+                finally:
+                    self._release(p_vp)
+        except Exception:
+            pass
+
+        return ""
 
     def get_active_window_elements(
         self,
@@ -415,6 +470,13 @@ class UIAClient:
                                     passes_filter = False
 
                                 if passes_filter:
+                                    elem_val = ""
+                                    # Extract actual text/value for text-bearing or document controls
+                                    if c_type.value in (50004, 50030, 50020, 50003, 50007) or any(
+                                        t in type_str.lower() for t in ("edit", "document", "text")
+                                    ):
+                                        elem_val = self._extract_element_text(vtbl_child, p_child)
+
                                     elem_dict = {
                                         "name": name,
                                         "control_type": type_str,
@@ -433,6 +495,7 @@ class UIAClient:
                                         "automation_id": auto_id,
                                         "class_name": cls_name,
                                         "depth": curr_depth + 1,
+                                        "value": elem_val,
                                     }
                                     elements.append(elem_dict)
 
@@ -501,3 +564,135 @@ class UIAClient:
                 if (elem_name and q in elem_name) or q == elem_type or (elem_id and q in elem_id):
                     return elem
         return None
+
+    def get_element_text(
+        self,
+        name_query: str,
+        hwnd: Optional[int] = None,
+        control_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """Read actual text/value from a target UI element by name query and optional control type."""
+        elem = self.find_element(name_query, hwnd=hwnd, control_type=control_type)
+        if elem is not None:
+            return elem.get("value", "")
+        return None
+
+    def set_element_text(
+        self,
+        text: str,
+        name_query: str = "",
+        control_type: Optional[str] = None,
+        hwnd: Optional[int] = None,
+    ) -> bool:
+        """Set the text of a target UI element using ValuePattern::SetValue."""
+        hdesk = self._attach_interactive_desktop()
+        try:
+            target_hwnd = hwnd or (self._find_top_interactive_window() or 0)
+            if not target_hwnd:
+                return False
+
+            p_uia = self._get_uia_instance()
+            if not p_uia:
+                return False
+
+            p_win_elem = c_void_p()
+            p_condition = c_void_p()
+            try:
+                vtbl_uia = ctypes.cast(p_uia.value, POINTER(POINTER(c_void_p))).contents
+                proto_ElementFromHandle = WINFUNCTYPE(HRESULT, c_void_p, c_void_p, POINTER(c_void_p))
+                hr = proto_ElementFromHandle(vtbl_uia[6])(p_uia, c_void_p(target_hwnd), byref(p_win_elem))
+                if hr != 0 or not p_win_elem.value:
+                    return False
+
+                proto_CreateTrue = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))
+                hr = proto_CreateTrue(vtbl_uia[21])(p_uia, byref(p_condition))
+                if hr != 0 or not p_condition.value:
+                    return False
+
+                from collections import deque
+                queue = deque([(p_win_elem, 0)])
+                proto_FindAll = WINFUNCTYPE(HRESULT, c_void_p, c_int, c_void_p, POINTER(c_void_p))
+                proto_get_Length = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_int))
+                proto_GetElement = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))
+                proto_GetName = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))
+                proto_GetType = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_int))
+
+                q = name_query.lower().strip()
+                success = False
+
+                while queue and not success:
+                    curr_elem, curr_depth = queue.popleft()
+                    if curr_depth >= 5:
+                        if curr_elem.value != p_win_elem.value:
+                            self._release(curr_elem)
+                        continue
+
+                    vtbl_curr = ctypes.cast(curr_elem.value, POINTER(POINTER(c_void_p))).contents
+                    p_child_arr = c_void_p()
+                    hr_find = proto_FindAll(vtbl_curr[6])(curr_elem, TreeScope_Children, p_condition, byref(p_child_arr))
+                    if hr_find == 0 and p_child_arr.value:
+                        vtbl_arr = ctypes.cast(p_child_arr.value, POINTER(POINTER(c_void_p))).contents
+                        count = c_int(0)
+                        proto_get_Length(vtbl_arr[3])(p_child_arr, byref(count))
+
+                        for i in range(count.value):
+                            p_child = c_void_p()
+                            hr_elem = proto_GetElement(vtbl_arr[4])(p_child_arr, i, byref(p_child))
+                            if hr_elem != 0 or not p_child.value:
+                                continue
+
+                            vtbl_child = ctypes.cast(p_child.value, POINTER(POINTER(c_void_p))).contents
+                            p_name = c_void_p()
+                            proto_GetName(vtbl_child[23])(p_child, byref(p_name))
+                            name = ctypes.wstring_at(p_name.value) if p_name.value else ""
+                            if p_name.value:
+                                SysFreeString(p_name)
+
+                            c_type = c_int(0)
+                            proto_GetType(vtbl_child[21])(p_child, byref(c_type))
+                            type_str = UIA_CONTROL_TYPES.get(c_type.value, f"Control_{c_type.value}")
+
+                            matched = False
+                            if not q:
+                                matched = type_str in ("Edit", "Document")
+                            else:
+                                matched = (q in name.lower()) or (q == type_str.lower())
+
+                            if matched and not success:
+                                # Call ValuePattern::SetValue
+                                p_vp = c_void_p()
+                                hr_vp = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))(vtbl_child[16])(p_child, 10002, byref(p_vp))
+                                if hr_vp == 0 and p_vp.value:
+                                    try:
+                                        vtbl_vp = ctypes.cast(p_vp.value, POINTER(POINTER(c_void_p))).contents
+                                        bstr = SysAllocString(text)
+                                        hr_set = WINFUNCTYPE(HRESULT, c_void_p, c_void_p)(vtbl_vp[3])(p_vp, bstr)
+                                        SysFreeString(bstr)
+                                        if hr_set == 0:
+                                            success = True
+                                    finally:
+                                        self._release(p_vp)
+
+                            if curr_depth + 1 < 5 and not success:
+                                queue.append((p_child, curr_depth + 1))
+                            else:
+                                self._release(p_child)
+
+                        self._release(p_child_arr)
+
+                    if curr_elem.value != p_win_elem.value:
+                        self._release(curr_elem)
+
+                while queue:
+                    q_elem, _ = queue.popleft()
+                    if q_elem.value != p_win_elem.value:
+                        self._release(q_elem)
+
+                return success
+            finally:
+                self._release(p_condition)
+                self._release(p_win_elem)
+                self._release(p_uia)
+        finally:
+            self._detach_interactive_desktop(hdesk)
+

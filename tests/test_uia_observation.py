@@ -317,3 +317,222 @@ def test_agent_stale_target_rejection():
                 break
     assert stale_action_found, "Expected stale target safety violation to abort execution"
 
+
+def test_semantic_verification_element_text_exact_success():
+    """Verify semantic assertion: expected_element_text passes when exact text matches."""
+    obs = {
+        "window": {"title": "Notepad", "hwnd": 1234},
+        "elements": [
+            {
+                "name": "Text editor",
+                "control_type": "Document",
+                "center": [300, 200],
+                "enabled": True,
+                "focused": True,
+                "value": "Autonomous UIA Verified 2026",
+            }
+        ],
+        "element_count": 1,
+    }
+    rec = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "Text editor",
+                "text": "Autonomous UIA Verified 2026",
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec.status == VerificationStatus.VERIFIED
+
+
+def test_semantic_verification_element_text_wrong_text():
+    """Verify semantic assertion: expected_element_text fails when text does not match."""
+    obs = {
+        "window": {"title": "Notepad", "hwnd": 1234},
+        "elements": [
+            {
+                "name": "Text editor",
+                "control_type": "Document",
+                "value": "Autonomous UIA Verified 2026",
+            }
+        ],
+        "element_count": 1,
+    }
+    rec = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "Text editor",
+                "text": "Wrong Text Content",
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec.status == VerificationStatus.FAILED
+    assert "Expected element" in rec.verification
+
+
+def test_semantic_verification_element_text_missing_element():
+    """Verify semantic assertion: expected_element_text fails when target element is absent."""
+    obs = {
+        "window": {"title": "Notepad", "hwnd": 1234},
+        "elements": [
+            {"name": "Close", "control_type": "Button", "value": ""}
+        ],
+        "element_count": 1,
+    }
+    rec = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "NonExistentEditControl",
+                "text": "Some text",
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec.status == VerificationStatus.FAILED
+    assert "target element 'nonexistenteditcontrol' not found" in rec.verification.lower()
+
+
+def test_semantic_verification_element_text_unsupported_non_text_control():
+    """Verify semantic assertion: fails when target element is a non-text control with empty value."""
+    obs = {
+        "window": {"title": "Notepad", "hwnd": 1234},
+        "elements": [
+            {"name": "SubmitButton", "control_type": "Button", "value": ""}
+        ],
+        "element_count": 1,
+    }
+    rec = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "SubmitButton",
+                "text": "Expected text in button",
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec.status == VerificationStatus.FAILED
+    assert "found ''" in rec.verification
+
+
+def test_semantic_verification_element_text_empty_text():
+    """Verify semantic assertion for empty text: succeeds when empty, fails when non-empty."""
+    obs = {
+        "window": {"title": "Notepad", "hwnd": 1234},
+        "elements": [
+            {"name": "EmptyInput", "control_type": "Edit", "value": ""}
+        ],
+        "element_count": 1,
+    }
+    # Exact match on empty string passes
+    rec_pass = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "EmptyInput",
+                "text": "",
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec_pass.status == VerificationStatus.VERIFIED
+
+    # Expecting text when empty fails
+    rec_fail = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "EmptyInput",
+                "text": "Should not be empty",
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec_fail.status == VerificationStatus.FAILED
+
+
+def test_semantic_verification_element_text_unicode():
+    """Verify semantic assertion handles exact Unicode and special characters."""
+    unicode_content = "Unicode Test: 2026-αβγ-🚀 Café"
+    obs = {
+        "window": {"title": "Editor", "hwnd": 1234},
+        "elements": [
+            {
+                "name": "Text editor",
+                "control_type": "Document",
+                "value": unicode_content,
+            }
+        ],
+        "element_count": 1,
+    }
+    rec = default_verifier.verify(
+        "computer",
+        {
+            "action": "ui_elements",
+            "expected_element_text": {
+                "element": "Text editor",
+                "text": unicode_content,
+                "exact": True,
+            },
+        },
+        ToolResult(success=True, output=obs),
+    )
+    assert rec.status == VerificationStatus.VERIFIED
+
+
+def test_semantic_verification_expected_text_present():
+    """Verify semantic assertion: expected_text_present checks presence across any observed element."""
+    obs = {
+        "window": {"title": "Application", "hwnd": 555},
+        "elements": [
+            {"name": "Status", "control_type": "Text", "value": "Status: All Systems Operational 2026"},
+            {"name": "Input", "control_type": "Edit", "value": "username_test"},
+        ],
+        "element_count": 2,
+    }
+    # Present text passes
+    rec_pass = default_verifier.verify(
+        "computer",
+        {"action": "ui_elements", "expected_text_present": "Systems Operational"},
+        ToolResult(success=True, output=obs),
+    )
+    assert rec_pass.status == VerificationStatus.VERIFIED
+
+    # Missing text fails
+    rec_fail = default_verifier.verify(
+        "computer",
+        {"action": "ui_elements", "expected_text_present": "Critical Kernel Failure 999"},
+        ToolResult(success=True, output=obs),
+    )
+    assert rec_fail.status == VerificationStatus.FAILED
+    assert "was not found in any UI element" in rec_fail.verification
+
+
+def test_stale_target_prevention_on_set_element_text():
+    """Verify ComputerTool rejects set_element_text when expected_hwnd indicates active window changed."""
+    comp = ComputerTool()
+    res = comp.execute({
+        "action": "set_element_text",
+        "text": "Stale Input",
+        "expected_hwnd": 0x7FFFFFFF,
+    })
+    assert res.success is False
+    assert "Stale target safety violation" in res.error
+
+

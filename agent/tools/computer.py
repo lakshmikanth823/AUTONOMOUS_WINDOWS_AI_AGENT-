@@ -86,6 +86,8 @@ class ComputerTool(Tool):
                     "window_focus",
                     "ui_elements",
                     "ui_tree",
+                    "set_element_text",
+                    "read_element_text",
                 ],
                 "description": "The desktop action or observation to perform",
             },
@@ -102,7 +104,7 @@ class ComputerTool(Tool):
             },
             "text": {
                 "type": "string",
-                "description": "Text to type or window title query to focus",
+                "description": "Text to type, set, or window title query to focus",
             },
             "key": {
                 "type": "string",
@@ -115,6 +117,7 @@ class ComputerTool(Tool):
             },
             "path": {"type": "string", "description": "Path to save screenshot"},
             "hwnd": {"type": "integer", "description": "Target window handle for window operations or UIA inspection"},
+            "target_element": {"type": "string", "description": "Target UI element name or query for text operations"},
             "max_elements": {"type": "integer", "description": "Maximum number of UI elements to return (default: 100)"},
             "max_depth": {"type": "integer", "description": "Maximum tree depth to traverse (default: 5)"},
             "control_type": {"type": "string", "description": "Filter UI elements by control type (e.g. Button, Edit, MenuItem)"},
@@ -323,8 +326,8 @@ class ComputerTool(Tool):
         try:
             width, height = self.get_screen_resolution()
 
-            # Stale target safety check for interactive mouse actions
-            if action in ("mouse_move", "mouse_click", "double_click", "right_click"):
+            # Stale target safety check for interactive mouse actions and direct element text input
+            if action in ("mouse_move", "mouse_click", "double_click", "right_click", "set_element_text"):
                 expected_hwnd = args.get("expected_hwnd")
                 if expected_hwnd is not None:
                     curr_hwnd = self.user32.GetForegroundWindow()
@@ -764,6 +767,43 @@ class ComputerTool(Tool):
                         output=uia_res,
                     )
                 return ToolResult(success=True, output=uia_res)
+
+            elif action == "set_element_text":
+                target_query = args.get("target_element") or args.get("element_name") or ""
+                target_hwnd = int(args["hwnd"]) if args.get("hwnd") is not None else None
+                if not text:
+                    return ToolResult(success=False, error="Parameter 'text' is required for set_element_text.")
+                success = self.uia.set_element_text(
+                    text=str(text),
+                    name_query=str(target_query),
+                    hwnd=target_hwnd,
+                )
+                if not success:
+                    return ToolResult(
+                        success=False,
+                        error=f"Failed to set text on element '{target_query}' (control not found or does not support ValuePattern).",
+                    )
+                return ToolResult(
+                    success=True,
+                    output={"element": target_query, "text": str(text), "set": True},
+                )
+
+            elif action == "read_element_text":
+                target_query = args.get("target_element") or args.get("element_name") or ""
+                target_hwnd = int(args["hwnd"]) if args.get("hwnd") is not None else None
+                read_val = self.uia.get_element_text(
+                    name_query=str(target_query),
+                    hwnd=target_hwnd,
+                )
+                if read_val is None:
+                    return ToolResult(
+                        success=False,
+                        error=f"Element matching '{target_query}' not found.",
+                    )
+                return ToolResult(
+                    success=True,
+                    output={"element": target_query, "text": read_val},
+                )
 
             else:
                 return ToolResult(success=False, error=f"Unknown computer action: '{action}'")

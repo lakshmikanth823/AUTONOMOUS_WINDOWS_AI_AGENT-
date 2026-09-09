@@ -374,6 +374,59 @@ class Verifier:
             if not any(el.get("focused", False) for el in matching):
                 return False, f"Expected UI element '{exp_focused}' to have keyboard focus, but it is not focused."
 
+        # 6. Expected element text
+        exp_elem_text = args.get("expected_element_text")
+        if exp_elem_text is not None:
+            if isinstance(exp_elem_text, dict):
+                target_q = (exp_elem_text.get("element") or "").lower().strip()
+                expected_str = exp_elem_text.get("text", "")
+                exact = exp_elem_text.get("exact", True)
+            else:
+                target_q = (args.get("target_element") or args.get("element_name") or "").lower().strip()
+                expected_str = str(exp_elem_text)
+                exact = True
+
+            matching_elements = []
+            for el in elements:
+                name = el.get("name", "").lower().strip()
+                ctype = el.get("control_type", "").lower().strip()
+                auto_id = el.get("automation_id", "").lower().strip()
+                if not target_q:
+                    if el.get("value") or ctype in ("edit", "document"):
+                        matching_elements.append(el)
+                else:
+                    if target_q in name or target_q == ctype or target_q in auto_id:
+                        matching_elements.append(el)
+
+            if not matching_elements:
+                return False, f"Cannot verify element text: target element '{target_q}' not found."
+
+            matched_text = False
+            found_values = []
+            for el in matching_elements:
+                val = el.get("value", "")
+                found_values.append(val)
+                if exact:
+                    if val == expected_str:
+                        matched_text = True
+                        break
+                else:
+                    if expected_str in val:
+                        matched_text = True
+                        break
+
+            if not matched_text:
+                joined_vals = ", ".join(repr(v) for v in found_values[:3])
+                return False, f"Expected element '{target_q or 'any'}' to have text {repr(expected_str)} (exact={exact}), but found {joined_vals}."
+
+        # 7. Expected text present in any element
+        exp_text_present = args.get("expected_text_present")
+        if exp_text_present is not None:
+            exp_s = str(exp_text_present)
+            all_values = [el.get("value", "") for el in elements if el.get("value")]
+            if not any(exp_s in v for v in all_values):
+                return False, f"Expected text {repr(exp_s)} was not found in any UI element."
+
         return True, "All semantic UI assertions satisfied."
 
     def _verify_computer_core(
@@ -717,6 +770,8 @@ class Verifier:
                 "expected_element_enabled",
                 "expected_element_focused",
                 "expected_window_active",
+                "expected_element_text",
+                "expected_text_present",
             )
             if any(k in args for k in semantic_keys):
                 try:

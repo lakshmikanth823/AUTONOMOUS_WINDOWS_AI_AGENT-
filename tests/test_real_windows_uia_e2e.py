@@ -75,18 +75,24 @@ def main() -> None:
         print(f"Located target: [{edit_elem.get('control_type')}] '{clean_name}' at center {edit_elem.get('center')}")
 
         # ---------------------------------------------------------------------
-        # 4. Focus & Type Text
+        # 4. Input Text via Target Element
         # ---------------------------------------------------------------------
-        print("\n=== 4. Type Input Text ===")
-        type_res = comp.execute({"action": "type_text", "text": "Autonomous UIA Verified 2026"})
-        print("type_text success:", type_res.success)
-        assert type_res.success is True, f"type_text failed: {type_res.error}"
+        print("\n=== 4. Set/Type Input Text ===")
+        expected_text = "Autonomous UIA Verified 2026"
+        set_res = comp.execute({
+            "action": "set_element_text",
+            "text": expected_text,
+            "target_element": "Text editor",
+            "hwnd": notepad_hwnd,
+        })
+        print("set_element_text success:", set_res.success)
+        assert set_res.success is True, f"set_element_text failed: {set_res.error}"
 
         # ---------------------------------------------------------------------
-        # 5. Semantic State Verification
+        # 5. Semantic State Verification & Text Readback
         # ---------------------------------------------------------------------
-        print("\n=== 5. Semantic State Verification ===")
-        # Re-observe state
+        print("\n=== 5. Semantic State Verification & Text Readback ===")
+        # Re-observe state via fresh UIA observation
         reobs_res = comp.execute({
             "action": "ui_elements",
             "hwnd": notepad_hwnd,
@@ -95,18 +101,34 @@ def main() -> None:
         })
         assert reobs_res.success is True
 
-        # Assert active window is Notepad, Close button is present, imaginary dialog is absent
+        # Assert active window is Notepad, Close button is present, imaginary dialog is absent,
+        # AND exact element text readback matches expected_text
         verif_args = {
             "action": "ui_elements",
             "expected_window_active": "Notepad",
             "expected_element_present": "Close",
             "expected_element_absent": "NonExistentDialog_87654321",
+            "expected_element_text": {
+                "element": "Text editor",
+                "text": expected_text,
+                "exact": True,
+            },
         }
         verif_record = default_verifier.verify("computer", verif_args, reobs_res)
         print("Positive verification status:", verif_record.status)
         assert verif_record.status == VerificationStatus.VERIFIED, f"Verification failed: {verif_record.verification}"
 
-        # Negative assertion: asserting non-existent element present must fail
+        # Direct readback via read_element_text
+        read_res = comp.execute({
+            "action": "read_element_text",
+            "target_element": "Text editor",
+            "hwnd": notepad_hwnd,
+        })
+        print("Direct read_element_text success:", read_res.success, "text:", repr(read_res.output.get("text")))
+        assert read_res.success is True
+        assert read_res.output.get("text") == expected_text, f"Text mismatch: expected {expected_text}, got {read_res.output.get('text')}"
+
+        # Negative assertion A: asserting non-existent element present must fail
         neg_record = default_verifier.verify(
             "computer",
             {"action": "ui_elements", "expected_element_present": "ImaginaryModalControlXYZ"},
@@ -114,6 +136,22 @@ def main() -> None:
         )
         print("Negative assertion status (expected FAILED):", neg_record.status)
         assert neg_record.status == VerificationStatus.FAILED
+
+        # Negative assertion B: asserting wrong text in element must fail
+        neg_text_record = default_verifier.verify(
+            "computer",
+            {
+                "action": "ui_elements",
+                "expected_element_text": {
+                    "element": "Text editor",
+                    "text": "Completely Incorrect Corrupted Content 999",
+                    "exact": True,
+                },
+            },
+            reobs_res,
+        )
+        print("Wrong text assertion status (expected FAILED):", neg_text_record.status)
+        assert neg_text_record.status == VerificationStatus.FAILED
 
     finally:
         # ---------------------------------------------------------------------
