@@ -389,9 +389,11 @@ class Agent:
                                         for word in line.get("words", []):
                                             if target_query.lower() in word.get("text", "").lower():
                                                 resolved_coords = word.get("center")
+                                                target_hwnd = prev_act.output.get("hwnd")
                                                 break
                                         if not resolved_coords:
                                             resolved_coords = line.get("center")
+                                            target_hwnd = prev_act.output.get("hwnd")
                                         break
                                 if resolved_coords:
                                     break
@@ -435,7 +437,12 @@ class Agent:
                     try:
                         import ctypes
                         curr_fg = ctypes.windll.user32.GetForegroundWindow()
-                        if curr_fg and int(expected_hwnd) != curr_fg:
+                        if not curr_fg:
+                            try:
+                                curr_fg = self.registry.get("computer")._get_active_window_info().get("hwnd", 0)
+                            except Exception:
+                                curr_fg = 0
+                        if int(expected_hwnd) != curr_fg:
                             stale_aborted = True
                             tool_result = ToolResult(
                                 success=False,

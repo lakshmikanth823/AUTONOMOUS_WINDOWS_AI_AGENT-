@@ -337,7 +337,9 @@ class ComputerTool(Tool):
                 expected_hwnd = args.get("expected_hwnd")
                 if expected_hwnd is not None:
                     curr_hwnd = self.user32.GetForegroundWindow()
-                    if curr_hwnd and int(expected_hwnd) != curr_hwnd:
+                    if not curr_hwnd:
+                        curr_hwnd = self._get_active_window_info().get("hwnd", 0)
+                    if int(expected_hwnd) != curr_hwnd:
                         return ToolResult(
                             success=False,
                             error=f"Stale target safety violation: target was observed in window {expected_hwnd}, but active window is {curr_hwnd}. Interaction aborted.",
@@ -815,8 +817,11 @@ class ComputerTool(Tool):
                 save_path = Path(output_path) if output_path else None
                 hwnd_val = args.get("hwnd")
                 target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                effective_hwnd = target_hwnd or int(self.user32.GetForegroundWindow() or 0) or None
                 ocr_res = self.ocr.recognize_screen(save_path=save_path, hwnd=target_hwnd)
+                ocr_res.hwnd = effective_hwnd
                 out_dict = ocr_res.model_dump()
+                out_dict["hwnd"] = effective_hwnd
                 if ocr_res.status == "OCR_FAILED":
                     return ToolResult(
                         success=False,
@@ -845,10 +850,13 @@ class ComputerTool(Tool):
                 save_path = Path(output_path) if output_path else None
                 hwnd_val = args.get("hwnd")
                 target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                effective_hwnd = target_hwnd or int(self.user32.GetForegroundWindow() or 0) or None
                 ocr_res = self.ocr.recognize_region(
                     x=x_int, y=y_int, width=w_int, height=h_int, save_path=save_path, hwnd=target_hwnd
                 )
+                ocr_res.hwnd = effective_hwnd
                 out_dict = ocr_res.model_dump()
+                out_dict["hwnd"] = effective_hwnd
                 if ocr_res.status == "OCR_FAILED":
                     return ToolResult(
                         success=False,

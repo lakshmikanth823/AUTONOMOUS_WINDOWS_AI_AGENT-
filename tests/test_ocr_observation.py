@@ -61,19 +61,55 @@ class TestWindowsNativeOCR:
         assert first_word.rect["height"] > 0
         assert len(first_word.center) == 2
 
-    def test_coordinate_offset_translation(self, sample_text_image: Path) -> None:
+    def test_coordinate_offset_translation_formula_proof(self, sample_text_image: Path) -> None:
+        """Prove absolute_x = region_x + local_x and absolute_y = region_y + local_y mathematically."""
         ocr = WindowsNativeOCR()
-        offset_x, offset_y = 500, 300
-        res = ocr.recognize_image(sample_text_image, offset=(offset_x, offset_y))
-        assert res.status == OCR_SUCCESS_TEXT_FOUND
-        assert len(res.lines) > 0
+        base_res = ocr.recognize_image(sample_text_image, offset=(0, 0))
+        assert base_res.status == OCR_SUCCESS_TEXT_FOUND
+        assert len(base_res.lines) > 0
 
-        first_word = res.lines[0].words[0]
-        # Bounding rect must be translated by offset
-        assert first_word.rect["left"] >= offset_x
-        assert first_word.rect["top"] >= offset_y
-        assert first_word.center[0] >= offset_x
-        assert first_word.center[1] >= offset_y
+        reg_x, reg_y = 345, 678
+        offset_res = ocr.recognize_image(sample_text_image, offset=(reg_x, reg_y))
+        assert offset_res.status == OCR_SUCCESS_TEXT_FOUND
+
+        base_words = base_res.lines[0].words
+        offset_words = offset_res.lines[0].words
+        assert len(base_words) == len(offset_words)
+
+        for bw, ow in zip(base_words, offset_words):
+            assert ow.text == bw.text
+            # Mathematical proof: absolute = region + local
+            assert ow.rect["left"] == reg_x + bw.rect["left"]
+            assert ow.rect["top"] == reg_y + bw.rect["top"]
+            assert ow.rect["right"] == reg_x + bw.rect["right"]
+            assert ow.rect["bottom"] == reg_y + bw.rect["bottom"]
+            assert ow.center[0] == reg_x + bw.center[0]
+            assert ow.center[1] == reg_y + bw.center[1]
+
+    def test_corrupted_image_failure_mode(self, tmp_path: Path) -> None:
+        """Verify that corrupted image input returns OCR_FAILED, never OCR_SUCCESS_NO_TEXT."""
+        corrupt_file = tmp_path / "corrupted.png"
+        corrupt_file.write_bytes(b"\x89PNG\r\n\x1a\nCORRUPTED_GARBAGE_PAYLOAD_NOT_AN_IMAGE")
+
+        ocr = WindowsNativeOCR()
+        res = ocr.recognize_image(corrupt_file)
+        assert res.status == OCR_FAILED
+        assert res.status != OCR_SUCCESS_NO_TEXT
+        assert res.error is not None
+
+    def test_negative_region_coordinates(self) -> None:
+        """Reject negative region coordinates."""
+        ocr = WindowsNativeOCR()
+        res = ocr.recognize_region(-50, 20, 100, 100)
+        assert res.status == OCR_FAILED
+        assert "cannot be negative" in (res.error or "")
+
+    def test_region_near_screen_edge(self) -> None:
+        """Capture region near screen boundary without exception."""
+        ocr = WindowsNativeOCR()
+        res = ocr.recognize_region(1800, 1000, 100, 50)
+        assert res.status in (OCR_SUCCESS_TEXT_FOUND, OCR_SUCCESS_NO_TEXT)
+        assert res.region == (1800, 1000, 1900, 1050)
 
     def test_blank_image_no_text(self, blank_image: Path) -> None:
         ocr = WindowsNativeOCR()
@@ -248,3 +284,131 @@ class TestSecurityPolicyOCR:
         )
         assert eval_region.level == PermissionLevel.SAFE
         assert eval_region.is_blocked is False
+
+
+class TestOCRSafetyAndVerification:
+    """Hardened tests for OCR target safety and semantic comparison integrity."""
+
+    def test_stale_target_rejection_on_mouse_action(self) -> None:
+        comp = ComputerTool()
+        stale_hwnd = 0x7FFFFFFF
+        res = comp.execute({
+            "action": "mouse_click",
+            "x": 200,
+            "y": 200,
+            "expected_hwnd": stale_hwnd,
+        })
+        assert res.success is False
+        assert "Stale target safety violation" in (res.error or "")
+
+    def test_valid_target_mouse_action_proceeds(self) -> None:
+        comp = ComputerTool()
+        active_hwnd = comp._get_active_window_info().get("hwnd")
+        if active_hwnd:
+            res = comp.execute({
+                "action": "mouse_move",
+                "x": 200,
+                "y": 200,
+                "expected_hwnd": active_hwnd,
+            })
+            assert res.success is True
+
+    def test_semantic_verification_requires_actual_comparison(self) -> None:
+        """API success alone must never verify if semantic expectation fails."""
+        tool_res = ToolResult(
+            success=True,
+            output={
+                "status": OCR_SUCCESS_TEXT_FOUND,
+                "text": "Completely Different Unrelated Content",
+                "lines": [],
+            },
+        )
+        record = default_verifier.verify(
+            "computer",
+            {"action": "ocr_screen", "expected_ocr_text_present": "TargetNeedleText"},
+            tool_res,
+        )
+        assert record.status == VerificationStatus.FAILED
+        assert record.passed is False
+        assert "was not found in recognized text" in record.verification
+
+    def test_ocr_failed_status_never_verified(self) -> None:
+        """OCR_FAILED status in output must fail verification."""
+        tool_res = ToolResult(
+            success=True,
+            output={
+                "status": OCR_FAILED,
+                "error": "Simulated hardware error",
+                "text": "",
+                "lines": [],
+            },
+        )
+        record = default_verifier.verify(
+            "computer",
+            {"action": "ocr_screen"},
+            tool_res,
+        )
+        assert record.status == VerificationStatus.FAILED
+        assert "OCR execution failed" in record.verification
+
+    def test_non_uia_canvas_text_extraction(self) -> None:
+        """Prove that visible text drawn on a custom canvas invisible to UIA is recognized by OCR."""
+        import subprocess
+        import sys
+        import textwrap
+        import time
+        import ctypes
+        from agent.tools.uia import UIAClient
+
+        code = textwrap.dedent("""
+            import tkinter as tk
+            import sys
+            import ctypes
+            root = tk.Tk()
+            root.title('Non-UIA Canvas Harness')
+            root.geometry('450x200+180+180')
+            canvas = tk.Canvas(root, width=450, height=200, bg='white')
+            canvas.pack(fill='both', expand=True)
+            canvas.create_text(225, 100, text='Secret Canvas Text 2026', font=('Arial', 20, 'bold'), fill='black')
+            root.update_idletasks()
+            root.update()
+            hwnd = ctypes.windll.user32.FindWindowW(None, 'Non-UIA Canvas Harness')
+            sys.stdout.write(f"{hwnd}\\n")
+            sys.stdout.flush()
+            root.mainloop()
+        """)
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        line = proc.stdout.readline().strip()
+        assert line, f"Expected HWND from child process, got empty string. Stderr: {proc.stderr.read()}"
+        hwnd = int(line)
+        time.sleep(0.3)
+
+        try:
+            assert hwnd != 0, f"Expected valid canvas window HWND, proc poll: {proc.poll()}"
+
+            # 1. Prove UIA fails to expose the canvas text
+            uia = UIAClient()
+            uia_res = uia.get_active_window_elements(hwnd=hwnd)
+            uia_texts = [el.get("name", "") for el in uia_res.get("elements", [])] + [
+                el.get("value", "") for el in uia_res.get("elements", []) if el.get("value")
+            ]
+            assert not any("Secret Canvas Text 2026" in t for t in uia_texts), "Canvas text must NOT be exposed to UIA"
+
+            # 2. Prove OCR recognizes the non-UIA text with usable coordinates
+            comp = ComputerTool()
+            ocr_res = comp.execute({
+                "action": "ocr_region",
+                "x": 180,
+                "y": 180,
+                "width": 450,
+                "height": 200,
+                "hwnd": hwnd,
+            })
+            assert ocr_res.success is True
+            assert ocr_res.output.get("status") == OCR_SUCCESS_TEXT_FOUND
+            rec_text = ocr_res.output.get("text", "")
+            assert "Secret Canvas Text 2026" in rec_text or "Canvas Text" in rec_text
+        finally:
+            proc.terminate()
+
+

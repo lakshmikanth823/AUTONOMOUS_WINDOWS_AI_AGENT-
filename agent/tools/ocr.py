@@ -46,6 +46,7 @@ class OCRResult(BaseModel):
     region: Optional[Tuple[int, int, int, int]] = Field(
         default=None, description="Screen region (left, top, right, bottom) if region OCR was performed"
     )
+    hwnd: Optional[int] = Field(default=None, description="Target or active window handle when observed")
     screenshot_path: Optional[str] = Field(default=None, description="Path to screenshot image file if saved")
     error: Optional[str] = None
 
@@ -445,6 +446,11 @@ class WindowsNativeOCR:
             return OCRResult(
                 status=OCR_FAILED,
                 error=f"Invalid region dimensions: width={width}, height={height} (must be > 0).",
+            )
+        if x < 0 or y < 0:
+            return OCRResult(
+                status=OCR_FAILED,
+                error=f"Invalid region coordinates: x={x}, y={y} (coordinates cannot be negative).",
             )
 
         bbox = (int(x), int(y), int(x) + int(width), int(y) + int(height))
