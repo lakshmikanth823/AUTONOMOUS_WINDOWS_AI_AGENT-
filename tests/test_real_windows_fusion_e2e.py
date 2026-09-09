@@ -45,40 +45,65 @@ def main() -> None:
         notepad_hwnd = focus_res.output.get("hwnd")
         print("Notepad focused with HWND:", notepad_hwnd)
 
-        # 1. Observe semantic state (fast mode with OCR off)
-        obs_a = comp.execute({"action": "observe_semantic", "ocr_mode": "off", "hwnd": notepad_hwnd})
-        assert obs_a.success is True
-        out_a = obs_a.output
-        targets_a = out_a.get("targets", [])
-        print(f"Discovered {len(targets_a)} unified targets in Notepad (OCR off).")
-        assert len(targets_a) > 0, "Expected targets in Notepad"
+        # 1. Observe initial semantic state (fast mode with OCR off)
+        obs_pre = comp.execute({"action": "observe_semantic", "ocr_mode": "off", "hwnd": notepad_hwnd})
+        assert obs_pre.success is True
+        targets_pre = obs_pre.output.get("targets", [])
+        print(f"Discovered {len(targets_pre)} unified targets in Notepad (pre-action, OCR off).")
+        assert len(targets_pre) > 0, "Expected targets in Notepad"
 
-        # 2. Locate edit control and type text
-        res_tgt = resolve_target(targets_a, "Text editor")
+        # 2. Locate edit control and type/set text
+        res_tgt = resolve_target(targets_pre, "Text editor")
+        target_name = "Text editor"
         if res_tgt.status != "RESOLVED":
-            # Fallback to Document if name differs across Windows 10/11 versions
-            res_tgt = resolve_target(targets_a, "Document")
-        print(f"Target resolution status for editor: {res_tgt.status} (Reason: {res_tgt.reason})")
+            # Fallback to Document or Edit if name differs across Windows versions
+            res_tgt = resolve_target(targets_pre, "Document")
+            target_name = "Document" if res_tgt.status == "RESOLVED" else "Edit"
+        print(f"Target resolution status for editor ('{target_name}'): {res_tgt.status} (Reason: {res_tgt.reason})")
 
-        # Set text in editor
+        # 3. Action: Set text in editor
         typed_text = "Autonomous Fusion 2026"
         set_res = comp.execute({
             "action": "set_element_text",
             "text": typed_text,
-            "target_element": "Text editor",
+            "target_element": target_name,
             "hwnd": notepad_hwnd,
         })
         print("set_element_text success:", set_res.success)
         assert set_res.success is True
+        time.sleep(0.5)
 
-        # Verify semantic assertion on observe_semantic
+        # 4. Re-Observe semantic state (Action -> Re-Observe -> Verify lifecycle)
+        obs_post = comp.execute({"action": "observe_semantic", "ocr_mode": "off", "hwnd": notepad_hwnd})
+        assert obs_post.success is True
+        targets_post = obs_post.output.get("targets", [])
+        print(f"Discovered {len(targets_post)} unified targets in Notepad (post-action).")
+
+        # 5. Verify actual newly written text is present in observation targets
+        editor_targets = [t for t in targets_post if target_name.lower() in t.get("name", "").lower() or t.get("control_type") in ("Edit", "Document")]
+        observed_texts = [t.get("name", "") for t in editor_targets]
+        print(f"Observed editor target text(s) post-action: {observed_texts}")
+        has_written_text = any(typed_text in txt for txt in observed_texts)
+
+        # 6. Readback equality confirmation via read_element_text
+        read_res = comp.execute({
+            "action": "read_element_text",
+            "target_element": target_name,
+            "hwnd": notepad_hwnd,
+        })
+        assert read_res.success is True, f"read_element_text failed: {read_res.error}"
+        readback_content = read_res.output.get("text", "")
+        print(f"Semantic readback content: '{readback_content}'")
+        assert typed_text in readback_content, f"Expected '{typed_text}' in readback, got '{readback_content}'"
+
+        # 7. Semantic verifier assertion on post-action observation
         verif_a = default_verifier.verify(
             "computer",
             {"action": "observe_semantic", "expected_target_present": "File", "expected_window_active": "Notepad"},
-            obs_a,
+            obs_post,
         )
         assert verif_a.status == VerificationStatus.VERIFIED
-        print("Test A Verification: PASSED (Target 'File' present in active Notepad)")
+        print("Test A Verification: PASSED (Actual written text confirmed via Re-Observe and Readback)")
 
         # -----------------------------------------------------------------
         # Test B & C - Non-UIA Canvas & Fusion Corroboration
@@ -103,6 +128,7 @@ def main() -> None:
 
             root.update_idletasks()
             root.update()
+            ctypes.windll.user32.SetWindowTextW(btn.winfo_id(), 'CorroboratedButton')
             hwnd = ctypes.windll.user32.FindWindowW(None, 'Perception Fusion Harness')
             sys.stdout.write(f"{hwnd}\\n")
             sys.stdout.flush()

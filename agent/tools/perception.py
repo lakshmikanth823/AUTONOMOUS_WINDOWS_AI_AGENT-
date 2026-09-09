@@ -85,6 +85,27 @@ def compute_overlap_ratio(rect1: Dict[str, int], rect2: Dict[str, int]) -> float
     return inter_area / float(min_area)
 
 
+def check_semantic_agreement(label: str, ocr_text: str) -> bool:
+    """Deterministically check whether UIA label and OCR text agree semantically."""
+    l_norm = " ".join(label.lower().split())
+    o_norm = " ".join(ocr_text.lower().split())
+    if not l_norm or not o_norm:
+        return False
+    if l_norm == o_norm:
+        return True
+    l_tokens = set(l_norm.split())
+    o_tokens = set(o_norm.split())
+    if l_tokens == o_tokens:
+        return True
+    # Asymmetric token containment (e.g. label 'Save' and OCR 'Save As', or label 'Save As' and OCR 'Save')
+    # Require that all tokens of one are in the other AND difference in token count is at most 1
+    if l_tokens.issubset(o_tokens) and len(o_tokens) - len(l_tokens) <= 1:
+        return True
+    if o_tokens.issubset(l_tokens) and len(l_tokens) - len(o_tokens) <= 1:
+        return True
+    return False
+
+
 def fuse_perception(
     screen: Dict[str, int],
     cursor: Tuple[int, int],
@@ -136,20 +157,31 @@ def fuse_perception(
         # Check OCR overlap if OCR was performed
         # Containers (Window, Pane, Group, TitleBar) must not swallow inner OCR words
         is_container = el_type in ("Window", "Pane", "Group", "TitleBar")
+        overlapping_ocr_words = []
         if ocr_performed and ocr_words and not is_container:
             for w_idx, ocr_w in ocr_words:
                 ratio = compute_overlap_ratio(el_rect, ocr_w.rect)
-                text_match = (
-                    ocr_w.text.lower() in label.lower()
-                    or label.lower() in ocr_w.text.lower()
-                )
-                if ratio >= overlap_threshold and text_match:
+                if ratio >= overlap_threshold:
+                    overlapping_ocr_words.append((w_idx, ocr_w))
+
+        if overlapping_ocr_words:
+            combined_ocr = " ".join(w.text for _, w in overlapping_ocr_words).strip()
+            if check_semantic_agreement(label, combined_ocr):
+                for w_idx, _ in overlapping_ocr_words:
                     matched_ocr_word_indices.add(w_idx)
-                    corroborating_ocr_text.append(ocr_w.text)
-                    matching_word_count += 1
+                sources.append("ocr")
+                corroborating_ocr_text.append(combined_ocr)
+                matching_word_count = len(overlapping_ocr_words)
+            else:
+                # Spatial overlap exists BUT semantic text disagrees!
+                # Record contradiction, DO NOT merge, DO NOT assign sources=["uia", "ocr"]!
+                contradictions.append(
+                    f"UIA/OCR text disagreement at region ({el_rect.get('left')},{el_rect.get('top')},{el_rect.get('right')},{el_rect.get('bottom')}): "
+                    f"UIA='{label}' vs OCR='{combined_ocr}'"
+                )
 
         if corroborating_ocr_text:
-            sources.append("ocr")
+            pass
 
         tgt_id = f"tgt_{target_counter:03d}_{label.lower()[:15].replace(' ', '_')}"
         target_counter += 1
@@ -319,6 +351,7 @@ class PerceptionEngine:
         max_elements: int = 100,
         control_type: Optional[str] = None,
         hwnd: Optional[int] = None,
+        target_query: Optional[str] = None,
     ) -> PerceivedWindowsState:
         """Perform unified perception observation with selective OCR."""
         target_hwnd = hwnd or active_window_info.get("hwnd", 0)
@@ -340,41 +373,70 @@ class PerceptionEngine:
 
         if ocr_mode == "screen":
             ocr_result = self.ocr.recognize_screen(hwnd=target_hwnd)
-        elif ocr_mode == "region":
-            rect = dict(active_window_info.get("rect", {}))
-            if target_hwnd:
-                import ctypes
-                from ctypes import wintypes
-                rc = wintypes.RECT()
-                if ctypes.windll.user32.GetWindowRect(target_hwnd, ctypes.byref(rc)):
-                    rect = {
-                        "left": rc.left,
-                        "top": rc.top,
-                        "right": rc.right,
-                        "bottom": rc.bottom,
-                        "width": max(0, rc.right - rc.left),
-                        "height": max(0, rc.bottom - rc.top),
-                    }
-            rx = max(0, int(rect.get("left", 0)))
-            ry = max(0, int(rect.get("top", 0)))
-            rw = max(1, int(rect.get("width", screen_size[0])))
-            rh = max(1, int(rect.get("height", screen_size[1])))
-            ocr_result = self.ocr.recognize_region(x=rx, y=ry, width=rw, height=rh, hwnd=target_hwnd)
-        elif ocr_mode == "auto":
-            # Auto triggers OCR only if UIA returned 0 elements (e.g. canvas or game)
-            if len(elements) == 0:
-                rect = active_window_info.get("rect", {})
+        elif ocr_mode in ("region", "auto"):
+            should_run_ocr = (ocr_mode == "region")
+            if ocr_mode == "auto":
+                # Auto strategy:
+                # - If UIA returned 0 elements (e.g. pure canvas, game)
+                # - OR if caller specified a target_query that was not found in any UIA element
+                if len(elements) == 0:
+                    should_run_ocr = True
+                elif target_query:
+                    q_clean = target_query.strip().lower()
+                    uia_has_target = any(
+                        q_clean in (el.get("name", "") + " " + el.get("value", "")).lower()
+                        or q_clean == el.get("control_type", "").lower()
+                        for el in elements
+                    )
+                    if not uia_has_target:
+                        should_run_ocr = True
+
+            if should_run_ocr:
+                rect = dict(active_window_info.get("rect", {}))
+                if target_hwnd:
+                    import ctypes
+                    from ctypes import wintypes
+                    rc = wintypes.RECT()
+                    if ctypes.windll.user32.GetWindowRect(target_hwnd, ctypes.byref(rc)):
+                        rect = {
+                            "left": rc.left,
+                            "top": rc.top,
+                            "right": rc.right,
+                            "bottom": rc.bottom,
+                            "width": max(0, rc.right - rc.left),
+                            "height": max(0, rc.bottom - rc.top),
+                        }
                 rx = max(0, int(rect.get("left", 0)))
                 ry = max(0, int(rect.get("top", 0)))
-                rw = max(1, int(rect.get("width", 600)))
-                rh = max(1, int(rect.get("height", 400)))
+                rw = max(1, int(rect.get("width", screen_size[0])))
+                rh = max(1, int(rect.get("height", screen_size[1])))
                 ocr_result = self.ocr.recognize_region(x=rx, y=ry, width=rw, height=rh, hwnd=target_hwnd)
+
+        win_info = dict(active_window_info)
+        if target_hwnd and target_hwnd != win_info.get("hwnd"):
+            win_info["hwnd"] = target_hwnd
+            import ctypes
+            from ctypes import wintypes
+            length = ctypes.windll.user32.GetWindowTextLengthW(target_hwnd)
+            buff = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(target_hwnd, buff, length + 1)
+            win_info["title"] = buff.value
+            rc = wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(target_hwnd, ctypes.byref(rc)):
+                win_info["rect"] = {
+                    "left": rc.left,
+                    "top": rc.top,
+                    "right": rc.right,
+                    "bottom": rc.bottom,
+                    "width": max(0, rc.right - rc.left),
+                    "height": max(0, rc.bottom - rc.top),
+                }
 
         # 4. Pure perception fusion
         return fuse_perception(
             screen=screen,
             cursor=cursor_pos,
-            active_window=active_window_info,
+            active_window=win_info,
             uia_elements=elements,
             ocr_result=ocr_result,
         )

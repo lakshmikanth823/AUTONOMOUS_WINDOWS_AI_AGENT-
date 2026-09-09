@@ -164,6 +164,141 @@ class TestPerceptionFusionPure:
         assert tgt.ocr_word_count == 1
         assert tgt.center == (360, 425)
 
+    def test_case_a_overlapping_and_matching_text(self, mock_screen, mock_cursor, mock_window) -> None:
+        """Case A: UIA 'Save' + OCR 'Save' + overlapping -> 1 target, sources=['uia', 'ocr']."""
+        uia_elems = [
+            {"name": "Save", "control_type": "Button", "rect": {"left": 100, "top": 100, "right": 180, "bottom": 140, "width": 80, "height": 40}, "center": (140, 120)}
+        ]
+        ocr_res = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="Save", word_count=1, line_count=1,
+            lines=[OCRLine(text="Save", rect={"left": 105, "top": 105, "right": 175, "bottom": 135, "width": 70, "height": 30}, center=(140, 120),
+                           words=[OCRWord(text="Save", rect={"left": 105, "top": 105, "right": 175, "bottom": 135, "width": 70, "height": 30}, center=(140, 120))])]
+        )
+        state = fuse_perception(mock_screen, mock_cursor, mock_window, uia_elems, ocr_res)
+        assert len(state.targets) == 1
+        tgt = state.targets[0]
+        assert tgt.name == "Save"
+        assert tgt.sources == ["uia", "ocr"]
+        assert tgt.ocr_text == "Save"
+        assert len(state.contradictions) == 0
+
+    def test_case_b_overlapping_but_disagreeing_text(self, mock_screen, mock_cursor, mock_window) -> None:
+        """Case B: UIA 'Save' + OCR 'Cancel' + overlapping -> NOT merged, contradiction logged, UIA sources=['uia'], OCR sources=['ocr']."""
+        uia_elems = [
+            {"name": "Save", "control_type": "Button", "rect": {"left": 100, "top": 100, "right": 180, "bottom": 140, "width": 80, "height": 40}, "center": (140, 120)}
+        ]
+        ocr_res = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="Cancel", word_count=1, line_count=1,
+            lines=[OCRLine(text="Cancel", rect={"left": 105, "top": 105, "right": 175, "bottom": 135, "width": 70, "height": 30}, center=(140, 120),
+                           words=[OCRWord(text="Cancel", rect={"left": 105, "top": 105, "right": 175, "bottom": 135, "width": 70, "height": 30}, center=(140, 120))])]
+        )
+        state = fuse_perception(mock_screen, mock_cursor, mock_window, uia_elems, ocr_res)
+        # Must produce 2 targets: one UIA 'Save', one OCR 'Cancel'
+        assert len(state.targets) == 2
+        uia_tgt = next(t for t in state.targets if t.name == "Save")
+        ocr_tgt = next(t for t in state.targets if t.name == "Cancel")
+        assert uia_tgt.sources == ["uia"]
+        assert ocr_tgt.sources == ["ocr"]
+        # Contradiction MUST be logged!
+        assert len(state.contradictions) == 1
+        assert "UIA/OCR text disagreement" in state.contradictions[0]
+        assert "Save" in state.contradictions[0] and "Cancel" in state.contradictions[0]
+
+    def test_case_c_matching_text_but_non_overlapping(self, mock_screen, mock_cursor, mock_window) -> None:
+        """Case C: UIA 'Save' + OCR 'Save' + disjoint coordinates -> NOT merged, 2 separate targets."""
+        uia_elems = [
+            {"name": "Save", "control_type": "Button", "rect": {"left": 100, "top": 100, "right": 180, "bottom": 140, "width": 80, "height": 40}, "center": (140, 120)}
+        ]
+        ocr_res = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="Save", word_count=1, line_count=1,
+            lines=[OCRLine(text="Save", rect={"left": 500, "top": 500, "right": 580, "bottom": 540, "width": 80, "height": 40}, center=(540, 520),
+                           words=[OCRWord(text="Save", rect={"left": 500, "top": 500, "right": 580, "bottom": 540, "width": 80, "height": 40}, center=(540, 520))])]
+        )
+        state = fuse_perception(mock_screen, mock_cursor, mock_window, uia_elems, ocr_res)
+        assert len(state.targets) == 2
+        t1, t2 = state.targets[0], state.targets[1]
+        assert t1.sources == ["uia"]
+        assert t2.sources == ["ocr"]
+        assert len(state.contradictions) == 0
+
+    def test_case_d_asymmetric_token_containment(self, mock_screen, mock_cursor, mock_window) -> None:
+        """Case D: UIA 'Save' + OCR 'Save As' + overlapping -> corroborated with asymmetric token containment."""
+        uia_elems = [
+            {"name": "Save", "control_type": "Button", "rect": {"left": 100, "top": 100, "right": 220, "bottom": 140, "width": 120, "height": 40}, "center": (160, 120)}
+        ]
+        ocr_res = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="Save As", word_count=2, line_count=1,
+            lines=[OCRLine(text="Save As", rect={"left": 105, "top": 105, "right": 215, "bottom": 135, "width": 110, "height": 30}, center=(160, 120),
+                           words=[OCRWord(text="Save", rect={"left": 105, "top": 105, "right": 150, "bottom": 135, "width": 45, "height": 30}, center=(127, 120)),
+                                  OCRWord(text="As", rect={"left": 160, "top": 105, "right": 215, "bottom": 135, "width": 55, "height": 30}, center=(187, 120))])]
+        )
+        state = fuse_perception(mock_screen, mock_cursor, mock_window, uia_elems, ocr_res)
+        assert len(state.targets) == 1
+        assert state.targets[0].sources == ["uia", "ocr"]
+        assert state.targets[0].ocr_text == "Save As"
+        assert len(state.contradictions) == 0
+
+    def test_case_e_multi_word_label_overlapping_ocr_words(self, mock_screen, mock_cursor, mock_window) -> None:
+        """Case E: Multi-word label UIA 'Save As' + OCR words ['Save', 'As'] overlapping -> corroborated!"""
+        uia_elems = [
+            {"name": "Save As", "control_type": "Button", "rect": {"left": 100, "top": 100, "right": 220, "bottom": 140, "width": 120, "height": 40}, "center": (160, 120)}
+        ]
+        ocr_res = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="Save As", word_count=2, line_count=1,
+            lines=[OCRLine(text="Save As", rect={"left": 105, "top": 105, "right": 215, "bottom": 135, "width": 110, "height": 30}, center=(160, 120),
+                           words=[OCRWord(text="Save", rect={"left": 105, "top": 105, "right": 150, "bottom": 135, "width": 45, "height": 30}, center=(127, 120)),
+                                  OCRWord(text="As", rect={"left": 160, "top": 105, "right": 215, "bottom": 135, "width": 55, "height": 30}, center=(187, 120))])]
+        )
+        state = fuse_perception(mock_screen, mock_cursor, mock_window, uia_elems, ocr_res)
+        assert len(state.targets) == 1
+        assert state.targets[0].name == "Save As"
+        assert state.targets[0].sources == ["uia", "ocr"]
+        assert state.targets[0].ocr_text == "Save As"
+
+    def test_case_f_auto_ocr_skips_when_uia_has_target_runs_when_missing(self) -> None:
+        """Case F: Auto OCR mode skips OCR when target found in UIA; runs OCR when target missing."""
+        from unittest.mock import MagicMock
+        from agent.tools.perception import PerceptionEngine
+
+        mock_uia = MagicMock()
+        mock_ocr = MagicMock()
+        engine = PerceptionEngine(uia_client=mock_uia, ocr_engine=mock_ocr)
+
+        # 1. Target present in UIA -> OCR should NOT be called
+        mock_uia.get_active_window_elements.return_value = {
+            "elements": [
+                {
+                    "name": "SaveButton",
+                    "control_type": "Button",
+                    "rect": {"left": 10, "top": 10, "right": 50, "bottom": 30, "width": 40, "height": 20},
+                    "center": (30, 20),
+                }
+            ]
+        }
+        engine.observe(
+            screen_size=(1920, 1080),
+            cursor_pos=(0, 0),
+            active_window_info={"hwnd": 123},
+            ocr_mode="auto",
+            target_query="SaveButton",
+        )
+        assert mock_ocr.recognize_region.call_count == 0
+        assert mock_ocr.recognize_screen.call_count == 0
+
+        # 2. Target missing from UIA -> OCR MUST be called
+        mock_uia.get_active_window_elements.return_value = {"elements": []}
+        mock_ocr.recognize_region.return_value = OCRResult(
+            status=OCR_SUCCESS_TEXT_FOUND, text="CanvasTarget", word_count=1, line_count=1, lines=[]
+        )
+        engine.observe(
+            screen_size=(1920, 1080),
+            cursor_pos=(0, 0),
+            active_window_info={"hwnd": 123, "rect": {"left": 0, "top": 0, "width": 500, "height": 500}},
+            ocr_mode="auto",
+            target_query="CanvasTarget",
+        )
+        assert mock_ocr.recognize_region.call_count == 1
+
 
 class TestTargetDisambiguation:
     """Test deterministic priority resolution and ambiguity safety gating."""

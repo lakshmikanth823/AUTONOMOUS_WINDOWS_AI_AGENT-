@@ -880,6 +880,7 @@ class ComputerTool(Tool):
                 ctype_filter = args.get("control_type")
                 hwnd_val = args.get("hwnd")
                 target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                target_q = args.get("target_element") or args.get("element_name") or args.get("text") or args.get("target_query")
 
                 screen_size = self.get_screen_resolution()
                 cursor_pos = self._get_cursor_position()
@@ -894,6 +895,7 @@ class ComputerTool(Tool):
                     max_elements=max_elems,
                     control_type=ctype_filter,
                     hwnd=target_hwnd,
+                    target_query=target_q,
                 )
                 return ToolResult(success=True, output=fused_state.model_dump())
 
