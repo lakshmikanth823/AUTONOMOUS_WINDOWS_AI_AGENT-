@@ -75,10 +75,6 @@ class Verifier:
         elif tool_name == "terminal":
             return self._verify_terminal(arguments, tool_result, expected)
 
-        # Domain: Python Runner
-        elif tool_name == "python_runner":
-            return self._verify_python_runner(arguments, tool_result, expected)
-
         # Domain: Browser
         elif tool_name == "browser":
             return self._verify_browser(action_name, arguments, tool_result, expected)
@@ -250,29 +246,6 @@ class Verifier:
             observation=out,
             verification=f"Process exited cleanly with code 0 in {out.get('duration_seconds')}s.",
             status=VerificationStatus.VERIFIED,
-        )
-
-    def _verify_python_runner(
-        self,
-        args: Dict[str, Any],
-        result: ToolResult,
-        expected: str,
-    ) -> VerificationRecord:
-        out = result.output
-        if isinstance(out, dict) and out.get("exit_code") == 0:
-            return VerificationRecord(
-                action="python_runner",
-                expected_result=expected,
-                observation=out,
-                verification=f"Python execution finished with exit code 0 in {out.get('duration_seconds')}s.",
-                status=VerificationStatus.VERIFIED,
-            )
-        return VerificationRecord(
-            action="python_runner",
-            expected_result=expected,
-            observation=out,
-            verification=f"Python execution failed: {result.error}",
-            status=VerificationStatus.FAILED,
         )
 
     def _verify_browser(

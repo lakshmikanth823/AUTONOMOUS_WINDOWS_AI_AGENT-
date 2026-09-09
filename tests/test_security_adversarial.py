@@ -21,7 +21,6 @@ from agent.security.sanitizer import (
 )
 from agent.tools.browser import BrowserTool
 from agent.tools.filesystem import FilesystemTool
-from agent.tools.python_runner import PythonRunnerTool
 from agent.tools.registry import ToolRegistry, registry as global_registry
 from agent.tools.terminal import TerminalTool
 
@@ -207,13 +206,15 @@ def test_subprocess_environment_scrubbing():
     assert "GITHUB_TOKEN" not in clean_env
 
 
-def test_python_runner_cannot_access_parent_secrets(tmp_path: Path):
-    """Verify PythonRunner execution subprocess cannot read secrets from os.environ."""
+def test_subprocess_cannot_access_parent_secrets(tmp_path: Path):
+    """Verify terminal execution subprocess cannot read secrets from os.environ."""
     os.environ["MOCK_SECRET_TOKEN"] = "CLASSIFIED_CREDENTIAL_DATA"
     try:
-        runner = PythonRunnerTool()
-        code = "import os\nprint('SECRET_PRESENT=' + str('MOCK_SECRET_TOKEN' in os.environ))"
-        result = runner.execute({"code": code})
+        term = TerminalTool()
+        result = term.execute({
+            "command": 'python -c "import os; print(\'SECRET_PRESENT=\' + str(\'MOCK_SECRET_TOKEN\' in os.environ))"',
+            "working_directory": str(tmp_path),
+        })
         assert result.success is True
         assert "SECRET_PRESENT=False" in result.output["stdout"]
     finally:

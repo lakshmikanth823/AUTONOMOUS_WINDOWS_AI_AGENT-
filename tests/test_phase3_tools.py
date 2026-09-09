@@ -8,7 +8,6 @@ from agent.core.verifier import default_verifier
 from agent.tools.browser import BrowserTool
 from agent.tools.computer import ComputerTool
 from agent.tools.filesystem import FilesystemTool
-from agent.tools.python_runner import PythonRunnerTool
 from agent.tools.terminal import TerminalTool
 
 
@@ -167,35 +166,39 @@ def test_terminal_blocked_destructive_command():
 
 
 # ==============================================================================
-# 3. Python Runner Tool Tests
+# 3. Canonical Terminal Python Execution Tests
 # ==============================================================================
 
-def test_python_runner_success():
-    """Verify executing valid Python snippet and output capture."""
-    py_tool = PythonRunnerTool()
-    code = "import math\nprint(f'PI={math.pi:.4f}')\nprint('SUCCESS')"
-    res = py_tool.execute({"code": code})
+def test_terminal_python_execution(tmp_path: Path):
+    """Verify executing valid Python snippet via canonical TerminalTool."""
+    term = TerminalTool()
+    res = term.execute({
+        "command": 'python -c "import math; print(f\'PI={math.pi:.4f}\'); print(\'SUCCESS\')"',
+        "working_directory": str(tmp_path),
+    })
 
     assert res.success is True
     assert "PI=3.1416" in res.output["stdout"]
     assert "SUCCESS" in res.output["stdout"]
     assert res.output["exit_code"] == 0
 
-    verif = default_verifier.verify("python_runner", {}, res)
+    verif = default_verifier.verify("terminal", {}, res)
     assert verif.passed is True
 
 
-def test_python_runner_exception_capture():
-    """Verify runtime exception capture in Python code."""
-    py_tool = PythonRunnerTool()
-    code = "def boom():\n    raise ZeroDivisionError('Division by zero in test')\nboom()"
-    res = py_tool.execute({"code": code})
+def test_terminal_python_exception_capture(tmp_path: Path):
+    """Verify runtime exception capture when executing Python via TerminalTool."""
+    term = TerminalTool()
+    res = term.execute({
+        "command": 'python -c "raise ZeroDivisionError(\'Division by zero in test\')"',
+        "working_directory": str(tmp_path),
+    })
 
     assert res.success is False
-    assert "ZeroDivisionError" in res.error
+    assert "ZeroDivisionError" in res.output["stderr"]
     assert res.output["exit_code"] != 0
 
-    verif = default_verifier.verify("python_runner", {}, res)
+    verif = default_verifier.verify("terminal", {}, res)
     assert verif.passed is False
 
 

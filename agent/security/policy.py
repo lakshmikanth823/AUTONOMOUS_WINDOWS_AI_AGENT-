@@ -299,31 +299,7 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Browser action: {action}"
 
-        # 5. PYTHON RUNNER TOOL EVALUATION
-        elif tool_name == "python_runner":
-            code = str(sanitized_args.get("code", "")).strip()
-
-            # Inspect code for potentially dangerous or external impact patterns
-            high_risk_code_patterns = [
-                r"\bimport\s+os\b.*os\.system",
-                r"\bsubprocess\b",
-                r"\bshutil\.rmtree\b",
-                r"\bctypes\b",
-                r"\bsocket\b",
-                r"\burllib\b",
-                r"\brequests\b",
-                r"\bhttpx\b",
-            ]
-            is_high_risk = any(re.search(pat, code, re.IGNORECASE) for pat in high_risk_code_patterns)
-
-            if is_high_risk:
-                computed_level = PermissionLevel.REQUIRES_APPROVAL
-                reason = "Python code contains process spawning, network sockets, or destructive OS primitives."
-            else:
-                computed_level = PermissionLevel.LOW_RISK
-                reason = "Sandboxed Python execution."
-
-        # 6. COMPUTER TOOL EVALUATION
+        # 5. COMPUTER TOOL EVALUATION
         elif tool_name == "computer":
             action = str(sanitized_args.get("action", "")).strip()
             if action == "keyboard_input":
