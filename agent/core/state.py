@@ -117,7 +117,7 @@ class TaskExecutionReport(BaseModel):
 
         if self.plan and self.plan.steps:
             for s in self.plan.steps:
-                status_icon = "✓" if s.status == "completed" else ("✗" if s.status == "failed" else "○")
+                status_icon = "x" if s.status == "completed" else ("!" if s.status == "failed" else " ")
                 lines.append(f"- [{status_icon}] **{s.step_id}**: {s.objective} (`{s.tool_required}`)")
         else:
             lines.append("- *No plan generated.*")
