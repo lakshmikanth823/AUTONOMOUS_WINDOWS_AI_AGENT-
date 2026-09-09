@@ -14,6 +14,7 @@ from agent.core.planner import Planner, PlanStep
 from agent.core.state import Task, TaskStatus
 from agent.llm.provider import get_llm_provider
 from agent.logger import get_task_logger, init_logger
+from agent.memory import MemoryCategory, default_memory_manager
 from agent.tools.registry import registry
 from agent.ui.cli import (
     console,
@@ -77,16 +78,34 @@ def cmd_tools() -> int:
 
 
 def cmd_memory() -> int:
-    """Display session and persistent task memory."""
+    """Display persistent SQLite memory records across categories."""
     print_banner()
-    if not _SESSION_TASKS:
-        console.print("[yellow]Memory is currently empty. No tasks executed in this session.[/yellow]")
-        console.print("[dim]Persistent SQLite memory will be populated as tasks run.[/dim]")
-        return 0
+    store = default_memory_manager.store
 
-    console.print(f"[bold green]Tasks in Memory ({len(_SESSION_TASKS)}):[/bold green]")
-    for t in _SESSION_TASKS:
-        print_task_card(t)
+    total_count = 0
+    categories = [
+        MemoryCategory.USER_PREFERENCE,
+        MemoryCategory.FACT,
+        MemoryCategory.TASK,
+        MemoryCategory.PROJECT,
+        MemoryCategory.TOOL_ACTION,
+    ]
+
+    for cat in categories:
+        records = store.list_by_category(cat, limit=5)
+        if records:
+            total_count += len(records)
+            cat_name = cat.value.replace("_", " ").title()
+            console.print(f"\n[bold cyan]Category: {cat_name}[/bold cyan] ({len(records)} recent records):")
+            for r in records:
+                importance_badge = f"[yellow]({r.importance:.1f})[/yellow]"
+                console.print(f"  * {importance_badge} [white]{r.content}[/white] [dim]({r.created_at[:19]})[/dim]")
+
+    if total_count == 0:
+        console.print("[yellow]Memory store is currently empty.[/yellow]")
+        console.print("[dim]Tasks, facts, and preferences will persist automatically in SQLite.[/dim]")
+    else:
+        console.print(f"\n[dim]Database path: {store.db_path}[/dim]")
     return 0
 
 
@@ -112,6 +131,7 @@ def cmd_task(goal: str) -> Any:
         tool_registry=registry,
         settings=settings,
         approval_callback=handle_approval,
+        memory_manager=default_memory_manager,
     )
 
     console.print(f"[bold cyan]Planning Goal:[/bold cyan] {goal}")

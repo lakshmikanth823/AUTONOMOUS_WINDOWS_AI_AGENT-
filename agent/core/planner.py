@@ -84,13 +84,21 @@ class Planner:
                         f"Step '{step.step_id}' references unknown or future dependency '{dep}'."
                     )
 
-    def create_plan(self, goal: str, available_tools: Optional[List[Tool]] = None) -> Plan:
+    def create_plan(
+        self,
+        goal: str,
+        available_tools: Optional[List[Tool]] = None,
+        memory_context: Optional[str] = None,
+    ) -> Plan:
         """Prompt the LLM and return a strictly validated Plan."""
         tools = available_tools if available_tools is not None else default_registry.list_tools()
         tool_desc = format_tools_for_prompt(tools)
 
-        user_prompt = (
-            f"GOAL: {goal}\n\n"
+        user_prompt = f"GOAL: {goal}\n\n"
+        if memory_context and memory_context.strip():
+            user_prompt += f"{memory_context.strip()}\n\n"
+
+        user_prompt += (
             f"{tool_desc}\n\n"
             f"Generate a minimal, logical, step-by-step Plan to accomplish this goal."
         )

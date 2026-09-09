@@ -70,6 +70,7 @@ class Agent:
         verifier: Optional[Verifier] = None,
         recovery_manager: Optional[RecoveryManager] = None,
         escalation_callback: Optional[Callable[[str, PlanStep], bool]] = None,
+        memory_manager: Optional[Any] = None,
     ) -> None:
         self.planner = planner
         self.registry = tool_registry or default_registry
@@ -80,6 +81,7 @@ class Agent:
             max_retries=self.settings.max_retry_attempts
         )
         self.escalation_callback = escalation_callback
+        self.memory_manager = memory_manager
 
     def run(self, goal: str) -> TaskState:
         """Execute the complete goal-plan-execute-verify-recover cycle."""
@@ -87,10 +89,20 @@ class Agent:
         logger = get_task_logger(state.task_id)
         logger.info(f"Received goal: {goal}")
 
-        # 1. PLAN & 2. VALIDATE PLAN
+        # 1. PLAN & 2. VALIDATE PLAN (with relevance-based memory retrieval)
         try:
             available_tools = self.registry.list_tools()
-            plan = self.planner.create_plan(goal, available_tools=available_tools)
+            memory_context = ""
+            if self.memory_manager:
+                memory_context = self.memory_manager.get_relevant_context(goal)
+                if memory_context:
+                    logger.info("Injected relevant memory context into planning prompt.")
+
+            plan = self.planner.create_plan(
+                goal,
+                available_tools=available_tools,
+                memory_context=memory_context,
+            )
             state.plan = plan
             logger.info(f"Generated valid plan with {len(plan.steps)} steps.")
         except PlanValidationError as e:
@@ -239,4 +251,11 @@ class Agent:
         state.current_step_id = None
         state.mark_updated()
         logger.info(f"Goal '{goal}' successfully accomplished.")
+
+        if self.memory_manager:
+            try:
+                self.memory_manager.record_task_completion(state)
+            except Exception as e:
+                logger.warning(f"Failed to record task in memory: {e}")
+
         return state
