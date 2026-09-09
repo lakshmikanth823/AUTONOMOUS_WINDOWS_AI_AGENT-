@@ -24,6 +24,7 @@ class TaskStateEnum(str, Enum):
     EXECUTING = "EXECUTING"
     VERIFYING = "VERIFYING"
     RECOVERING = "RECOVERING"
+    REPLANNING = "REPLANNING"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -42,6 +43,9 @@ class TaskLimits(BaseModel):
     max_execution_time_seconds: float = Field(default=300.0, description="Overall task timeout")
     max_tool_calls: int = Field(default=50, description="Maximum tool invocations")
     max_tokens: int = Field(default=100000, description="Maximum token consumption")
+    max_replans: int = Field(default=5, description="Maximum adaptive replanning attempts")
+    max_recovery_attempts: int = Field(default=5, description="Maximum recovery attempts")
+    max_consecutive_no_progress: int = Field(default=3, description="Maximum consecutive iterations with no progress")
 
 
 class StepResult(BaseModel):
@@ -151,6 +155,14 @@ class TaskState(BaseModel):
     remaining_issues: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     retry_counts: Dict[str, int] = Field(default_factory=dict)
+    replan_count: int = 0
+    recovery_count: int = 0
+    consecutive_no_progress_count: int = 0
+    last_observation: Optional[Dict[str, Any]] = None
+    last_successful_state: Optional[Dict[str, Any]] = None
+    goal_verified: bool = False
+    termination_reason: Optional[str] = None
+    state_history: List[str] = Field(default_factory=list)
     total_tool_calls: int = 0
     total_tokens_used: int = 0
     start_time: float = Field(default_factory=time.perf_counter)

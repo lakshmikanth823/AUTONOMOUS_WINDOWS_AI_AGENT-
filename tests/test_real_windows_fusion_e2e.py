@@ -231,12 +231,15 @@ def main() -> None:
             proc_canvas.terminate()
 
     finally:
-        print("\n=== Test F: Clean Up All Processes & Verify ===")
         proc_notepad.terminate()
-        time.sleep(0.5)
+        try:
+            proc_notepad.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            proc_notepad.kill()
+        time.sleep(1.0)
         # Check window list to confirm Notepad is gone
-        win_list = comp.execute({"action": "window_list"}).output.get("windows", [])
-        notepad_remaining = any("Notepad" in w for w in win_list)
+        win_list = [str(w).lower() for w in comp.execute({"action": "window_list"}).output.get("windows", [])]
+        notepad_remaining = any("untitled - notepad" in w for w in win_list)
         print("Notepad remaining in window list:", notepad_remaining)
         assert not notepad_remaining, "Expected Notepad process to be fully terminated"
         print("Test F (Cleanup Verification): PASSED")

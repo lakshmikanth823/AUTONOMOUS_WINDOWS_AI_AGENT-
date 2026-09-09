@@ -213,14 +213,31 @@ class Agent:
             state.errors.append("No plan available to execute.")
             return state
 
-        # 3. STEP-BY-STEP EXECUTION LOOP
-        for idx in range(start_index, len(plan.steps)):
-            step = plan.steps[idx]
-            state.current_step_index = idx
+        # Initial world state capture if not already captured
+        if not state.last_observation:
+            try:
+                comp_tool = self.registry.get("computer")
+                if comp_tool:
+                    init_obs = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
+                    if init_obs.success:
+                        state.last_observation = init_obs.output
+            except Exception:
+                pass
+
+        # 3. ADAPTIVE STEP-BY-STEP EXECUTION CONTROLLER LOOP
+        step_idx = start_index
+        while True:
+            plan = state.plan
+            if not plan or step_idx >= len(plan.steps):
+                break
+
+            step = plan.steps[step_idx]
+            state.current_step_index = step_idx
             state.current_step_id = step.step_id
 
             # Skip steps that are already completed (e.g. across pause/resume)
             if step.status == "completed":
+                step_idx += 1
                 continue
 
             # Cancellation check
@@ -244,6 +261,7 @@ class Agent:
                 state.errors.append(err)
                 state.remaining_issues.append(err)
                 state.status = TaskStateEnum.FAILED
+                state.termination_reason = "LIMIT_REACHED"
                 break
 
             if state.total_tool_calls >= self.limits.max_tool_calls:
@@ -251,13 +269,15 @@ class Agent:
                 state.errors.append(err)
                 state.remaining_issues.append(err)
                 state.status = TaskStateEnum.FAILED
+                state.termination_reason = "LIMIT_REACHED"
                 break
 
-            if idx >= self.limits.max_steps:
+            if step_idx >= self.limits.max_steps or len(state.actions) >= self.limits.max_steps:
                 err = f"Task exceeded maximum allowed steps ({self.limits.max_steps})."
                 state.errors.append(err)
                 state.remaining_issues.append(err)
                 state.status = TaskStateEnum.FAILED
+                state.termination_reason = "LIMIT_REACHED"
                 break
 
             # 1. Emergency stop check
@@ -267,6 +287,7 @@ class Agent:
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
                 state.status = TaskStateEnum.CANCELLED
+                state.termination_reason = "EMERGENCY_STOP"
                 logger.critical(err_msg)
                 break
 
@@ -276,6 +297,7 @@ class Agent:
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
                 state.status = TaskStateEnum.FAILED
+                state.termination_reason = "RATE_LIMIT_EXCEEDED"
                 logger.error(err_msg)
                 break
 
@@ -297,6 +319,7 @@ class Agent:
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
                 state.status = TaskStateEnum.FAILED
+                state.termination_reason = "SECURITY_BLOCKED"
                 self.audit_logger.log_action(
                     task_id=state.task_id,
                     action_id=f"act_blocked_{step.step_id}",
@@ -337,6 +360,7 @@ class Agent:
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
                     state.status = TaskStateEnum.FAILED
+                    state.termination_reason = "APPROVAL_REJECTED"
                     self.audit_logger.log_action(
                         task_id=state.task_id,
                         action_id=f"act_rejected_{step.step_id}",
@@ -352,6 +376,7 @@ class Agent:
             # EXECUTION & VERIFICATION & RECOVERY
             step_success = False
             retries = 0
+            recovery_decision = None
 
             while retries <= self.limits.max_retries_per_step and not step_success:
                 # 4. EXECUTION
@@ -421,7 +446,10 @@ class Agent:
                         if ambiguity_detected:
                             # Host safety: deterministic abort on ambiguous target
                             logger.warning(f"Aborting action due to ambiguity: {ambiguity_msg}")
-                            state.status = TaskStateEnum.VERIFYING
+                            state.status = TaskStateEnum.FAILED
+                            state.termination_reason = "AMBIGUOUS"
+                            state.errors.append(ambiguity_msg)
+                            state.remaining_issues.append(ambiguity_msg)
                             verif_record = VerificationRecord(
                                 action=effective_args.get("action", "mouse_action"),
                                 expected_result=step.expected_result or "Unambiguous target execution",
@@ -455,6 +483,10 @@ class Agent:
                                     res_tgt = resolve_target(fused.targets, target_query)
                                     if res_tgt.status == "AMBIGUOUS":
                                         logger.warning(f"Aborting action due to ambiguity: {res_tgt.reason}")
+                                        state.status = TaskStateEnum.FAILED
+                                        state.termination_reason = "AMBIGUOUS"
+                                        state.errors.append(res_tgt.reason)
+                                        state.remaining_issues.append(res_tgt.reason)
                                         verif_record = VerificationRecord(
                                             action=effective_args.get("action", "mouse_action"),
                                             expected_result=step.expected_result or "Unambiguous target execution",
@@ -494,6 +526,7 @@ class Agent:
                     f"{step.tool_required}({effective_args})"
                 )
 
+                # Stale target protection with dynamic reacquisition attempt
                 stale_aborted = False
                 expected_hwnd = effective_args.get("expected_hwnd")
                 if expected_hwnd is not None and step.tool_required == "computer" and effective_args.get("action") in (
@@ -508,11 +541,39 @@ class Agent:
                             except Exception:
                                 curr_fg = 0
                         if int(expected_hwnd) != curr_fg:
-                            stale_aborted = True
-                            tool_result = ToolResult(
-                                success=False,
-                                error=f"Stale target safety violation: target was observed in window {expected_hwnd}, but active window is {curr_fg}. Interaction aborted.",
-                            )
+                            # Attempt adaptive reacquisition if target name exists
+                            target_q = effective_args.get("target_element") or effective_args.get("element_name")
+                            reacquired = False
+                            if target_q:
+                                try:
+                                    comp_tool = self.registry.get("computer")
+                                    obs_res = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
+                                    if obs_res.success:
+                                        state.last_observation = obs_res.output
+                                        from agent.tools.perception import UnifiedTarget, resolve_target
+                                        raw_targets = [
+                                            UnifiedTarget(**t) if isinstance(t, dict) else t
+                                            for t in obs_res.output.get("targets", [])
+                                        ]
+                                        res_tgt = resolve_target(raw_targets, target_q)
+                                        if res_tgt.status == "RESOLVED" and res_tgt.target:
+                                            effective_args["x"] = res_tgt.target.center[0]
+                                            effective_args["y"] = res_tgt.target.center[1]
+                                            effective_args["expected_hwnd"] = res_tgt.target.hwnd
+                                            expected_hwnd = res_tgt.target.hwnd
+                                            curr_fg = ctypes.windll.user32.GetForegroundWindow()
+                                            if int(expected_hwnd) == curr_fg:
+                                                reacquired = True
+                                                logger.info(f"Adaptive reacquisition succeeded for '{target_q}' in window {curr_fg}.")
+                                except Exception:
+                                    pass
+
+                            if not reacquired:
+                                stale_aborted = True
+                                tool_result = ToolResult(
+                                    success=False,
+                                    error=f"Stale target safety violation: target was observed in window {expected_hwnd}, but active window is {curr_fg}. Interaction aborted.",
+                                )
                     except Exception:
                         pass
 
@@ -523,6 +584,16 @@ class Agent:
                         tool_result = ToolResult(success=False, error=str(e))
                     except Exception as e:
                         tool_result = ToolResult(success=False, error=f"Unexpected execution error: {e}")
+
+                # Mutating action post-action observation
+                if step.tool_required == "computer" and not stale_aborted and tool_result.success:
+                    try:
+                        comp_tool = self.registry.get("computer")
+                        post_obs = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
+                        if post_obs.success:
+                            state.last_observation = post_obs.output
+                    except Exception:
+                        pass
 
                 # Track created artifacts (e.g. from filesystem or browser/computer)
                 if step.tool_required == "filesystem" and effective_args.get("action") in (
@@ -576,6 +647,8 @@ class Agent:
                 if is_verified:
                     step_success = True
                     step.status = "completed"
+                    state.consecutive_no_progress_count = 0
+                    state.last_successful_state = state.last_observation
                     logger.info(f"FSM State [VERIFIED]: Step {step.step_id} passed verification.")
                     break
 
@@ -584,6 +657,23 @@ class Agent:
                 state.mark_updated()
                 retries += 1
                 state.retry_counts[step.step_id] = retries
+
+                # Loop detection: check consecutive identical action attempts without verified progress
+                state_sig = f"{step.tool_required}:{effective_args.get('action', '')}:{str(sorted((k, str(v)) for k, v in effective_args.items() if k != 'x' and k != 'y'))}"
+                if state.state_history and state.state_history[-1] == state_sig:
+                    state.consecutive_no_progress_count += 1
+                else:
+                    state.consecutive_no_progress_count = 1
+                state.state_history.append(state_sig)
+
+                if state.consecutive_no_progress_count >= self.limits.max_consecutive_no_progress:
+                    err_msg = f"Loop detected: No progress after {state.consecutive_no_progress_count} consecutive identical attempts ({state_sig}). Action aborted."
+                    state.errors.append(err_msg)
+                    state.remaining_issues.append(err_msg)
+                    state.status = TaskStateEnum.FAILED
+                    state.termination_reason = "NO_PROGRESS"
+                    logger.error(err_msg)
+                    break
 
                 err_text = tool_result.error or verif_record.verification
                 recovery_decision = self.recovery_manager.evaluate_recovery(
@@ -624,13 +714,63 @@ class Agent:
 
             if not step_success:
                 step.status = "failed"
+                # Check whether adaptive replanning is authorized and viable
+                can_replan = (
+                    state.status != TaskStateEnum.CANCELLED
+                    and state.termination_reason not in ("AMBIGUOUS", "NO_PROGRESS", "SECURITY_BLOCKED", "APPROVAL_REJECTED", "RATE_LIMIT_EXCEEDED", "EMERGENCY_STOP")
+                    and state.replan_count < self.limits.max_replans
+                    and not any("permanently BLOCKED" in e for e in state.errors)
+                    and not any("emergency stop" in e for e in state.errors)
+                    and not any("Ambiguous target" in e for e in state.errors)
+                )
+
+                if can_replan:
+                    state.status = TaskStateEnum.REPLANNING
+                    state.mark_updated()
+                    state.replan_count += 1
+                    err_text = (
+                        tool_result.error
+                        if 'tool_result' in locals() and tool_result and tool_result.error
+                        else (verif_record.verification if 'verif_record' in locals() and verif_record else "Execution failed")
+                    )
+                    logger.info(
+                        f"FSM State [REPLANNING] (Attempt {state.replan_count}/{self.limits.max_replans}) after: {err_text}"
+                    )
+                    try:
+                        revised_plan = self.planner.replan(
+                            goal=state.user_goal,
+                            current_plan=state.plan,
+                            failed_step=step,
+                            observation_summary=state.last_observation,
+                            error_message=err_text,
+                            available_tools=self.registry.list_tools(),
+                        )
+                        if revised_plan and revised_plan.steps:
+                            state.plan = revised_plan
+                            state.errors_and_recoveries.append({
+                                "step": step.step_id,
+                                "strategy": "REPLAN",
+                                "reason": f"Adaptive replan after {err_text}",
+                            })
+                            step_idx = 0
+                            continue
+                    except Exception as e:
+                        logger.warning(f"Replanning attempt failed: {e}")
+
                 state.status = TaskStateEnum.FAILED
                 state.remaining_issues.append(f"Step '{step.step_id}' failed all execution attempts.")
+                if not state.termination_reason:
+                    state.termination_reason = "STEP_FAILED"
                 break
+
+            # Advance to next step
+            step_idx += 1
 
         # 7. COMPLETION OR FINAL STATUS RESOLUTION
         if state.status not in (TaskStateEnum.FAILED, TaskStateEnum.CANCELLED, TaskStateEnum.PAUSED):
             state.status = TaskStateEnum.COMPLETED
+            state.goal_verified = True
+            state.termination_reason = "GOAL_VERIFIED"
 
         state.current_step_id = None
         state.end_time = time.perf_counter()

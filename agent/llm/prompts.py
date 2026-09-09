@@ -33,6 +33,18 @@ RULES FOR PLANNING:
 """
 
 
+REPLANNING_SYSTEM_PROMPT = """You are the Adaptive Replanning Engine of the Autonomous Windows AI Agent.
+Your objective is to inspect a divergence, failure, or unexpected world state during execution and generate a REVISED, minimal sequence of PlanSteps to achieve the original goal.
+
+RULES FOR REPLANNING:
+1. Ground your plan in the LATEST VERIFIED OBSERVATION of the world state. Do not assume previous assumptions still hold.
+2. DO NOT repeat the exact action that failed without modifying strategy, target, or arguments.
+3. Every step MUST use an available tool from the list provided.
+4. If the goal is ALREADY satisfied in the current observation, return an empty steps list with rationale stating the goal is achieved.
+5. Return ONLY valid JSON adhering strictly to the Plan schema.
+"""
+
+
 def format_tools_for_prompt(tools: List[Tool]) -> str:
     """Format available tools and their schemas into a clear prompt block."""
     lines = ["Available Registered Tools:"]

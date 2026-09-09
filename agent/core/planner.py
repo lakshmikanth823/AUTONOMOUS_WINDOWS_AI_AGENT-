@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from agent.config.permissions import PermissionLevel
 from agent.exceptions import PlanValidationError
 from agent.llm.base import LLMProvider
-from agent.llm.prompts import PLANNING_SYSTEM_PROMPT, format_tools_for_prompt
+from agent.llm.prompts import (
+    PLANNING_SYSTEM_PROMPT,
+    REPLANNING_SYSTEM_PROMPT,
+    format_tools_for_prompt,
+)
 from agent.tools.base import Tool
 from agent.tools.registry import registry as default_registry
 
@@ -112,3 +117,54 @@ class Planner:
         # Enforce rejection of invalid plans
         self.validate_plan(plan, tools)
         return plan
+
+    def replan(
+        self,
+        goal: str,
+        current_plan: Optional[Plan] = None,
+        failed_step: Optional[PlanStep] = None,
+        observation_summary: Optional[Dict[str, Any]] = None,
+        error_message: str = "",
+        available_tools: Optional[List[Tool]] = None,
+    ) -> Plan:
+        """Dynamically generate a revised Plan starting from the current world state."""
+        tools = available_tools if available_tools is not None else default_registry.list_tools()
+        tool_desc = format_tools_for_prompt(tools)
+
+        obs_str = json.dumps(observation_summary, indent=2) if observation_summary else "No observation available"
+        failed_info = (
+            f"Failed Step: {failed_step.step_id} ({failed_step.objective})\nError: {error_message}"
+            if failed_step
+            else f"Error: {error_message}"
+        )
+
+        user_prompt = (
+            f"ORIGINAL GOAL: {goal}\n\n"
+            f"EXECUTION STATUS & ERROR:\n{failed_info}\n\n"
+            f"LATEST OBSERVED WORLD STATE:\n{obs_str}\n\n"
+            f"{tool_desc}\n\n"
+            f"Generate a REVISED, minimal sequence of PlanSteps to achieve the goal from this current state."
+        )
+
+        try:
+            revised_plan = self.provider.generate_structured(
+                prompt=user_prompt,
+                schema=Plan,
+                system_prompt=REPLANNING_SYSTEM_PROMPT,
+            )
+            self.validate_plan(revised_plan, tools)
+            return revised_plan
+        except Exception:
+            # Deterministic fallback replan if model is unavailable or in mock test
+            fallback_step = PlanStep(
+                step_id=f"replan_{failed_step.step_id if failed_step else '1'}",
+                objective=f"Recover and achieve: {goal}",
+                tool_required=failed_step.tool_required if failed_step else "computer",
+                arguments=dict(failed_step.arguments) if failed_step else {"action": "observe"},
+                expected_result=f"Goal accomplished: {goal}",
+            )
+            return Plan(
+                goal=goal,
+                rationale=f"Deterministic fallback replan after: {error_message}",
+                steps=[fallback_step],
+            )
