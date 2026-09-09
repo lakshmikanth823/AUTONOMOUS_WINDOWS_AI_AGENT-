@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
 from agent.tools.base import Tool, ToolResult
+from agent.tools.ocr import WindowsNativeOCR
 from agent.tools.uia import UIAClient
 
 # Virtual key mappings for named control and navigation keys
@@ -88,11 +89,15 @@ class ComputerTool(Tool):
                     "ui_tree",
                     "set_element_text",
                     "read_element_text",
+                    "ocr_screen",
+                    "ocr_region",
                 ],
                 "description": "The desktop action or observation to perform",
             },
             "x": {"type": "integer", "description": "X screen coordinate (0 to screen width)"},
             "y": {"type": "integer", "description": "Y screen coordinate (0 to screen height)"},
+            "width": {"type": "integer", "description": "Width for region screenshot or OCR region"},
+            "height": {"type": "integer", "description": "Height for region screenshot or OCR region"},
             "button": {
                 "type": "string",
                 "enum": ["left", "right", "middle"],
@@ -149,6 +154,7 @@ class ComputerTool(Tool):
         self.kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
         self.kernel32.GlobalFree.restype = wintypes.HGLOBAL
         self.uia = UIAClient()
+        self.ocr = WindowsNativeOCR()
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
@@ -804,6 +810,52 @@ class ComputerTool(Tool):
                     success=True,
                     output={"element": target_query, "text": read_val},
                 )
+
+            elif action == "ocr_screen":
+                save_path = Path(output_path) if output_path else None
+                hwnd_val = args.get("hwnd")
+                target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                ocr_res = self.ocr.recognize_screen(save_path=save_path, hwnd=target_hwnd)
+                out_dict = ocr_res.model_dump()
+                if ocr_res.status == "OCR_FAILED":
+                    return ToolResult(
+                        success=False,
+                        error=ocr_res.error or "OCR screen recognition failed.",
+                        output=out_dict,
+                    )
+                return ToolResult(success=True, output=out_dict)
+
+            elif action == "ocr_region":
+                if x is None or y is None:
+                    return ToolResult(success=False, error="Parameters 'x' and 'y' are required for ocr_region.")
+                width_arg = args.get("width")
+                height_arg = args.get("height")
+                if width_arg is None or height_arg is None:
+                    return ToolResult(success=False, error="Parameters 'width' and 'height' are required for ocr_region.")
+                try:
+                    x_int = int(x)
+                    y_int = int(y)
+                    w_int = int(width_arg)
+                    h_int = int(height_arg)
+                except ValueError:
+                    return ToolResult(success=False, error="Invalid numeric parameters for ocr_region.")
+                if w_int <= 0 or h_int <= 0:
+                    return ToolResult(success=False, error="Parameters 'width' and 'height' must be positive integers.")
+
+                save_path = Path(output_path) if output_path else None
+                hwnd_val = args.get("hwnd")
+                target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+                ocr_res = self.ocr.recognize_region(
+                    x=x_int, y=y_int, width=w_int, height=h_int, save_path=save_path, hwnd=target_hwnd
+                )
+                out_dict = ocr_res.model_dump()
+                if ocr_res.status == "OCR_FAILED":
+                    return ToolResult(
+                        success=False,
+                        error=ocr_res.error or "OCR region recognition failed.",
+                        output=out_dict,
+                    )
+                return ToolResult(success=True, output=out_dict)
 
             else:
                 return ToolResult(success=False, error=f"Unknown computer action: '{action}'")

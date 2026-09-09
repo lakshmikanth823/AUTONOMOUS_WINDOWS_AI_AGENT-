@@ -372,12 +372,26 @@ class Agent:
                         target_hwnd = None
                         for prev_act in reversed(state.actions):
                             if prev_act.tool_name == "computer" and isinstance(prev_act.output, dict):
+                                # 1. UIA elements check
                                 for elem in prev_act.output.get("elements", []):
                                     el_name = elem.get("name", "").lower()
                                     el_type = elem.get("control_type", "").lower()
                                     if target_query.lower() in el_name or target_query.lower() == el_type:
                                         resolved_coords = elem.get("center")
                                         target_hwnd = prev_act.output.get("window", {}).get("hwnd")
+                                        break
+                                if resolved_coords:
+                                    break
+                                # 2. OCR lines / words check
+                                for line in prev_act.output.get("lines", []):
+                                    line_text = line.get("text", "").lower()
+                                    if target_query.lower() in line_text:
+                                        for word in line.get("words", []):
+                                            if target_query.lower() in word.get("text", "").lower():
+                                                resolved_coords = word.get("center")
+                                                break
+                                        if not resolved_coords:
+                                            resolved_coords = line.get("center")
                                         break
                                 if resolved_coords:
                                     break

@@ -429,6 +429,51 @@ class Verifier:
 
         return True, "All semantic UI assertions satisfied."
 
+    def _check_ocr_semantic_assertions(
+        self,
+        ocr_data: Dict[str, Any],
+        args: Dict[str, Any],
+        expected: str,
+    ) -> Tuple[bool, str]:
+        """Validate semantic OCR state assertions against OCR output."""
+        full_text = ocr_data.get("text", "")
+        lines = ocr_data.get("lines", [])
+
+        # 1. Expected OCR text present (case-insensitive substring search)
+        exp_ocr_present = args.get("expected_ocr_text_present")
+        if exp_ocr_present is not None:
+            q = str(exp_ocr_present).strip().lower()
+            if q not in full_text.lower():
+                return False, f"Expected OCR text {repr(exp_ocr_present)} was not found in recognized text: {repr(full_text[:200])}."
+
+        # 2. Expected OCR exact text
+        exp_ocr_exact = args.get("expected_ocr_exact_text")
+        if exp_ocr_exact is not None:
+            expected_exact_clean = str(exp_ocr_exact).strip()
+            actual_clean = full_text.strip()
+            if actual_clean != expected_exact_clean:
+                return False, f"Expected exact OCR text {repr(expected_exact_clean)}, but got {repr(actual_clean)}."
+
+        # 3. Expected OCR text absent
+        exp_ocr_absent = args.get("expected_ocr_text_absent")
+        if exp_ocr_absent is not None:
+            q_absent = str(exp_ocr_absent).strip().lower()
+            if q_absent in full_text.lower():
+                return False, f"Expected OCR text {repr(exp_ocr_absent)} to be absent, but it was found in recognized text."
+
+        # 4. Expected OCR word
+        exp_ocr_word = args.get("expected_ocr_word")
+        if exp_ocr_word is not None:
+            w_target = str(exp_ocr_word).strip().lower()
+            all_words = []
+            for line in lines:
+                for w in line.get("words", []):
+                    all_words.append(w.get("text", ""))
+            if not any(w_target == w.strip().lower() for w in all_words):
+                return False, f"Expected OCR word {repr(exp_ocr_word)} was not found in recognized words ({len(all_words)} words)."
+
+        return True, "All semantic OCR assertions satisfied."
+
     def _verify_computer_core(
         self,
         action: str,
@@ -745,6 +790,41 @@ class Verifier:
                 status=VerificationStatus.VERIFIED,
             )
 
+        elif action in ("ocr_screen", "ocr_region"):
+            if not (isinstance(out, dict) and "status" in out):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="OCR observation output missing required 'status' field.",
+                    status=VerificationStatus.FAILED,
+                )
+            if out.get("status") == "OCR_FAILED":
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"OCR execution failed: {out.get('error', 'Unknown OCR error')}",
+                    status=VerificationStatus.FAILED,
+                )
+            passed, reason = self._check_ocr_semantic_assertions(out, args, expected)
+            if not passed:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"OCR semantic verification failed: {reason}",
+                    status=VerificationStatus.FAILED,
+                )
+            word_count = out.get("word_count", 0)
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"OCR observation verified: {word_count} words recognized (status={out.get('status')}). {reason}",
+                status=VerificationStatus.VERIFIED,
+            )
+
         # Fallback for other actions
         return VerificationRecord(
             action=action,
@@ -763,7 +843,7 @@ class Verifier:
     ) -> VerificationRecord:
         """Verify computer action with syntactic checks and optional live semantic assertions."""
         record = self._verify_computer_core(action, args, result, expected)
-        if record.status == VerificationStatus.VERIFIED and action not in ("ui_elements", "ui_tree"):
+        if record.status == VerificationStatus.VERIFIED and action not in ("ui_elements", "ui_tree", "ocr_screen", "ocr_region"):
             semantic_keys = (
                 "expected_element_present",
                 "expected_element_absent",
@@ -793,6 +873,40 @@ class Verifier:
                         expected_result=expected,
                         observation=record.observation,
                         verification=f"Action '{action}' executed but live state inspection failed: {e}",
+                        status=VerificationStatus.FAILED,
+                    )
+
+            ocr_semantic_keys = (
+                "expected_ocr_text_present",
+                "expected_ocr_exact_text",
+                "expected_ocr_text_absent",
+                "expected_ocr_word",
+            )
+            if any(k in args for k in ocr_semantic_keys):
+                try:
+                    from agent.tools.ocr import WindowsNativeOCR
+                    ocr_tool = WindowsNativeOCR()
+                    region_arg = args.get("region") or args.get("ocr_region")
+                    if region_arg and len(region_arg) == 4:
+                        live_ocr = ocr_tool.recognize_region(region_arg[0], region_arg[1], region_arg[2], region_arg[3]).model_dump()
+                    else:
+                        live_ocr = ocr_tool.recognize_screen().model_dump()
+                    passed, reason = self._check_ocr_semantic_assertions(live_ocr, args, expected)
+                    if not passed:
+                        return VerificationRecord(
+                            action=action,
+                            expected_result=expected,
+                            observation=live_ocr,
+                            verification=f"Action '{action}' executed but live OCR semantic verification failed: {reason}",
+                            status=VerificationStatus.FAILED,
+                        )
+                    record.verification += f" [Live OCR state verified: {reason}]"
+                except Exception as e:
+                    return VerificationRecord(
+                        action=action,
+                        expected_result=expected,
+                        observation=record.observation,
+                        verification=f"Action '{action}' executed but live OCR inspection failed: {e}",
                         status=VerificationStatus.FAILED,
                     )
         return record
