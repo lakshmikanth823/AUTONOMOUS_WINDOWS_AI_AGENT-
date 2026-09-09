@@ -47,84 +47,13 @@ class PermissionLevel(str, Enum):
         return self.severity < other.severity
 
 
-# Patterns for permanently blocked (unauthorized destructive or obfuscated) commands
-BLOCKED_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\bformat\b(\.com)?\s+[a-z]:", re.IGNORECASE),
-    re.compile(r"\bFormat-Volume\b", re.IGNORECASE),
-    re.compile(r"\bClear-Disk\b", re.IGNORECASE),
-    re.compile(r"\bInitialize-Disk\b", re.IGNORECASE),
-    re.compile(r"\bdiskpart\b", re.IGNORECASE),
-    re.compile(r"\bdel\s+/[fsq]+\s+[a-z]:\\", re.IGNORECASE),
-    re.compile(r"\bRemove-Item\b.*-Recurse.*-Force.*[a-z]:\\(Windows|System32|Users)", re.IGNORECASE),
-    re.compile(r"\brm\s+-rf\s+/[a-z]*", re.IGNORECASE),
-    re.compile(r"\b(vssadmin|bcdedit|wbadmin|wevtutil)\b", re.IGNORECASE),
-    re.compile(r"-(enc|encodedcommand)\b", re.IGNORECASE),
-    re.compile(r"\b(Invoke-Expression|iex)\b", re.IGNORECASE),
-    re.compile(r"\[Convert\]::FromBase64String", re.IGNORECASE),
-    re.compile(r"\bStart-Process\b.*-Verb\s+RunAs", re.IGNORECASE),
-]
-
-# Patterns for operations requiring human-in-the-loop approval
-REQUIRES_APPROVAL_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\bRemove-Item\b.*-Recurse", re.IGNORECASE),
-    re.compile(r"\brmdir\b\s+/[sq]", re.IGNORECASE),
-    re.compile(r"\bStop-Computer\b", re.IGNORECASE),
-    re.compile(r"\bRestart-Computer\b", re.IGNORECASE),
-    re.compile(r"\bshutdown\b", re.IGNORECASE),
-    re.compile(r"\breg\s+(delete|add)\b", re.IGNORECASE),
-    re.compile(r"\bRemove-ItemProperty\b.*HKLM:", re.IGNORECASE),
-    re.compile(r"\bSet-ExecutionPolicy\b\s+(Unrestricted|Bypass)", re.IGNORECASE),
-    re.compile(r"\bnet\s+user\b", re.IGNORECASE),
-    re.compile(r"\btaskkill\b\s+/f", re.IGNORECASE),
-    re.compile(r"\bStop-Process\b.*-Force", re.IGNORECASE),
-    re.compile(r"\bgit\s+push\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+reset\b\s+--hard", re.IGNORECASE),
-    re.compile(r"\bpip\s+install\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
-    re.compile(r"\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|certutil|bitsadmin)\b", re.IGNORECASE),
-    re.compile(r"\b(ssh|scp|sftp|ftp|tftp|ncat|nc|Test-NetConnection)\b", re.IGNORECASE),
-    re.compile(r"\b(Get-ChildItem\s+env:|dir\s+env:)\b", re.IGNORECASE),
-]
-
-
 def classify_command_permission(command: str) -> PermissionLevel:
-    """Analyze a terminal command and assign an appropriate PermissionLevel."""
-    cmd_clean = command.strip()
-    if not cmd_clean:
-        return PermissionLevel.SAFE
-
-    for pattern in BLOCKED_PATTERNS:
-        if pattern.search(cmd_clean):
-            return PermissionLevel.BLOCKED
-
-    for pattern in REQUIRES_APPROVAL_PATTERNS:
-        if pattern.search(cmd_clean):
-            return PermissionLevel.REQUIRES_APPROVAL
-
-    # Detect dangerous command chaining / subshells
-    chaining_tokens = [";", "&&", "||", "&", "\n", "`"]
-    if any(token in cmd_clean for token in chaining_tokens) or "$(" in cmd_clean:
-        return PermissionLevel.REQUIRES_APPROVAL
-
-    # Safe read-only inspection commands
-    safe_prefixes = (
-        "Get-", "dir", "ls", "pwd", "cd ", "echo ", "Write-Host", "cat ",
-        "type ", "findstr", "Select-String", "git status", "git diff", "git log",
-        "python --version", "pip list", "whoami", "hostname"
-    )
-    if any(cmd_clean.startswith(prefix) for prefix in safe_prefixes):
-        return PermissionLevel.SAFE
-
-    # Known standard low-risk development tools
-    low_risk_prefixes = (
-        "python ", "pytest", "node ", "git add", "git commit", "git checkout",
-        "git branch", "git merge", "npm test"
-    )
-    if any(cmd_clean.startswith(prefix) for prefix in low_risk_prefixes):
-        return PermissionLevel.LOW_RISK
-
-    # Default policy: DENY unknown capabilities / require human approval
-    return PermissionLevel.REQUIRES_APPROVAL
+    """Analyze a terminal command and assign an appropriate PermissionLevel.
+    
+    Delegates to the authoritative security policy engine in agent.security.policy.
+    """
+    from agent.security.policy import classify_command_permission as _classify
+    return _classify(command)
 
 
 def can_auto_execute(
@@ -138,3 +67,10 @@ def can_auto_execute(
     if not approval_enabled:
         return True
     return level.severity <= max_auto_level.severity
+
+
+def __getattr__(name: str):
+    if name in ("BLOCKED_PATTERNS", "REQUIRES_APPROVAL_PATTERNS"):
+        import agent.security.policy as policy
+        return getattr(policy, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

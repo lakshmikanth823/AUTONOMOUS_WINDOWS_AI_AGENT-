@@ -3,8 +3,11 @@
 from agent.security.audit import AuditLogger, audit_logger
 from agent.security.emergency import EmergencyStop, emergency_stop
 from agent.security.policy import (
+    BLOCKED_PATTERNS,
+    REQUIRES_APPROVAL_PATTERNS,
     SecurityEvaluation,
     SecurityPolicy,
+    classify_command_permission,
     default_security_policy,
 )
 from agent.security.rate_limiter import RateLimiter
@@ -22,6 +25,9 @@ __all__ = [
     "SecurityEvaluation",
     "SecurityPolicy",
     "default_security_policy",
+    "classify_command_permission",
+    "BLOCKED_PATTERNS",
+    "REQUIRES_APPROVAL_PATTERNS",
     "RateLimiter",
     "scrub_subprocess_environment",
     "truncate_tool_output",

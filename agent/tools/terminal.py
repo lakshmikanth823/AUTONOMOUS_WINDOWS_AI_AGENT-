@@ -9,11 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agent.config.permissions import (
-    PermissionLevel,
-    classify_command_permission,
-)
+from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
+from agent.security.policy import classify_command_permission
 from agent.tools.base import Tool, ToolResult
 
 
