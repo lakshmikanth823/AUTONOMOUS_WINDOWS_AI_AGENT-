@@ -251,3 +251,69 @@ def test_semantic_verification_window_active():
     )
     assert rec_fail.status == VerificationStatus.FAILED
     assert "Expected active window title to contain 'Calculator'" in rec_fail.verification
+
+
+def test_uia_max_depth_enforcement():
+    """Verify max_depth restricts traversal and all returned elements have depth <= max_depth."""
+    comp = ComputerTool()
+    res = comp.execute({"action": "ui_elements", "max_elements": 50, "max_depth": 2})
+    assert res.success is True
+    assert isinstance(res.output, dict)
+    assert res.output.get("max_depth") == 2
+    for el in res.output.get("elements", []):
+        assert "depth" in el
+        assert el["depth"] <= 2
+
+
+def test_computer_tool_stale_target_prevention():
+    """Verify ComputerTool aborts mouse actions when expected_hwnd differs from foreground window."""
+    comp = ComputerTool()
+    # Provide an impossible/different HWND
+    stale_hwnd = 0x7FFFFFFF
+    res = comp.execute({
+        "action": "mouse_click",
+        "x": 100,
+        "y": 100,
+        "expected_hwnd": stale_hwnd,
+    })
+    assert res.success is False
+    assert "Stale target safety violation" in res.error
+
+
+def test_agent_stale_target_rejection():
+    """Verify Agent aborts interaction when expected_hwnd indicates active window shifted."""
+    import json
+    from agent.core.agent import Agent
+    from agent.core.planner import Planner
+    from agent.llm.provider import MockLLMProvider
+    from agent.tools.registry import registry
+
+    plan_json = json.dumps({
+        "goal": "Click button with stale window",
+        "steps": [
+            {
+                "step_id": "step_stale",
+                "objective": "Click button in non-foreground window",
+                "tool_required": "computer",
+                "arguments": {
+                    "action": "mouse_click",
+                    "x": 50,
+                    "y": 50,
+                    "expected_hwnd": 0x7FFFFFFF,
+                },
+                "risk_level": "SAFE",
+            }
+        ],
+    })
+    planner = Planner(provider=MockLLMProvider(responses=[plan_json]))
+    agent = Agent(planner=planner, tool_registry=registry)
+    state = agent.run("Click button with stale window")
+
+    stale_action_found = False
+    for act in state.actions:
+        if act.tool_name == "computer":
+            if act.error and "Stale target safety violation" in act.error:
+                stale_action_found = True
+                break
+    assert stale_action_found, "Expected stale target safety violation to abort execution"
+

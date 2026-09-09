@@ -369,6 +369,7 @@ class Agent:
                     target_query = effective_args.get("target_element") or effective_args.get("element_name")
                     if target_query:
                         resolved_coords = None
+                        target_hwnd = None
                         for prev_act in reversed(state.actions):
                             if prev_act.tool_name == "computer" and isinstance(prev_act.output, dict):
                                 for elem in prev_act.output.get("elements", []):
@@ -376,23 +377,34 @@ class Agent:
                                     el_type = elem.get("control_type", "").lower()
                                     if target_query.lower() in el_name or target_query.lower() == el_type:
                                         resolved_coords = elem.get("center")
+                                        target_hwnd = prev_act.output.get("window", {}).get("hwnd")
                                         break
                                 if resolved_coords:
                                     break
                         if not resolved_coords:
                             try:
                                 from agent.tools.uia import UIAClient
-                                el = UIAClient().find_element(target_query)
-                                if el:
-                                    resolved_coords = el.get("center")
+                                uia_client = UIAClient()
+                                res = uia_client.get_active_window_elements(max_elements=200)
+                                q = target_query.lower().strip()
+                                for elem in res.get("elements", []):
+                                    el_name = elem.get("name", "").lower()
+                                    el_type = elem.get("control_type", "").lower()
+                                    el_id = elem.get("automation_id", "").lower()
+                                    if q in el_name or q == el_type or (el_id and q in el_id):
+                                        resolved_coords = elem.get("center")
+                                        target_hwnd = res.get("window", {}).get("hwnd")
+                                        break
                             except Exception:
                                 pass
 
                         if resolved_coords and len(resolved_coords) == 2:
                             effective_args["x"] = resolved_coords[0]
                             effective_args["y"] = resolved_coords[1]
+                            if target_hwnd is not None:
+                                effective_args["expected_hwnd"] = target_hwnd
                             logger.info(
-                                f"Dynamically resolved semantic target '{target_query}' to coordinates ({resolved_coords[0]}, {resolved_coords[1]})."
+                                f"Dynamically resolved semantic target '{target_query}' to coordinates ({resolved_coords[0]}, {resolved_coords[1]}) in window {target_hwnd}."
                             )
 
                 action_id = f"act_{uuid.uuid4().hex[:8]}"
@@ -401,12 +413,30 @@ class Agent:
                     f"{step.tool_required}({effective_args})"
                 )
 
-                try:
-                    tool_result = self.registry.execute(step.tool_required, effective_args)
-                except ToolError as e:
-                    tool_result = ToolResult(success=False, error=str(e))
-                except Exception as e:
-                    tool_result = ToolResult(success=False, error=f"Unexpected execution error: {e}")
+                stale_aborted = False
+                expected_hwnd = effective_args.get("expected_hwnd")
+                if expected_hwnd is not None and step.tool_required == "computer" and effective_args.get("action") in (
+                    "mouse_click", "double_click", "right_click", "mouse_move"
+                ):
+                    try:
+                        import ctypes
+                        curr_fg = ctypes.windll.user32.GetForegroundWindow()
+                        if curr_fg and int(expected_hwnd) != curr_fg:
+                            stale_aborted = True
+                            tool_result = ToolResult(
+                                success=False,
+                                error=f"Stale target safety violation: target was observed in window {expected_hwnd}, but active window is {curr_fg}. Interaction aborted.",
+                            )
+                    except Exception:
+                        pass
+
+                if not stale_aborted:
+                    try:
+                        tool_result = self.registry.execute(step.tool_required, effective_args)
+                    except ToolError as e:
+                        tool_result = ToolResult(success=False, error=str(e))
+                    except Exception as e:
+                        tool_result = ToolResult(success=False, error=f"Unexpected execution error: {e}")
 
                 # Track created artifacts (e.g. from filesystem or browser/computer)
                 if step.tool_required == "filesystem" and effective_args.get("action") in (

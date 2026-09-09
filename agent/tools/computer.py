@@ -116,7 +116,9 @@ class ComputerTool(Tool):
             "path": {"type": "string", "description": "Path to save screenshot"},
             "hwnd": {"type": "integer", "description": "Target window handle for window operations or UIA inspection"},
             "max_elements": {"type": "integer", "description": "Maximum number of UI elements to return (default: 100)"},
+            "max_depth": {"type": "integer", "description": "Maximum tree depth to traverse (default: 5)"},
             "control_type": {"type": "string", "description": "Filter UI elements by control type (e.g. Button, Edit, MenuItem)"},
+            "expected_hwnd": {"type": "integer", "description": "Expected foreground window handle; aborts interaction if active window has changed (stale-target protection)"},
         },
         "required": ["action"],
     }
@@ -320,6 +322,17 @@ class ComputerTool(Tool):
         settings = get_settings()
         try:
             width, height = self.get_screen_resolution()
+
+            # Stale target safety check for interactive mouse actions
+            if action in ("mouse_move", "mouse_click", "double_click", "right_click"):
+                expected_hwnd = args.get("expected_hwnd")
+                if expected_hwnd is not None:
+                    curr_hwnd = self.user32.GetForegroundWindow()
+                    if curr_hwnd and int(expected_hwnd) != curr_hwnd:
+                        return ToolResult(
+                            success=False,
+                            error=f"Stale target safety violation: target was observed in window {expected_hwnd}, but active window is {curr_hwnd}. Interaction aborted.",
+                        )
 
             # 1. OBSERVE (Structured observation of current desktop state)
             if action == "observe":
@@ -733,6 +746,7 @@ class ComputerTool(Tool):
                 hwnd_val = args.get("hwnd")
                 target_hwnd = int(hwnd_val) if hwnd_val is not None else None
                 max_elems = int(args.get("max_elements", 100))
+                max_depth = int(args.get("max_depth", 5))
                 ctype_filter = args.get("control_type")
                 if ctype_filter:
                     ctype_filter = str(ctype_filter).strip()
@@ -740,6 +754,7 @@ class ComputerTool(Tool):
                 uia_res = self.uia.get_active_window_elements(
                     hwnd=target_hwnd,
                     max_elements=max_elems,
+                    max_depth=max_depth,
                     control_type_filter=ctype_filter,
                 )
                 if uia_res.get("error") and not uia_res.get("elements"):

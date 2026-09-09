@@ -122,6 +122,7 @@ class UIElement(BaseModel):
     class_name: str = ""
     automation_id: str = ""
     help_text: str = ""
+    depth: int = 1
 
 
 class UIAClient:
@@ -231,10 +232,11 @@ class UIAClient:
     def get_active_window_elements(
         self,
         hwnd: Optional[int] = None,
+        max_depth: int = 5,
         max_elements: int = 100,
         control_type_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Enumerate controls of the target or active window using UIA."""
+        """Enumerate controls of the target or active window using UIA bounded by max_depth and max_elements."""
         hdesk = self._attach_interactive_desktop()
         try:
             target_hwnd = hwnd
@@ -250,6 +252,7 @@ class UIAClient:
                     "window": {"title": "", "hwnd": 0, "process_name": ""},
                     "elements": [],
                     "element_count": 0,
+                    "max_depth": max_depth,
                     "truncated": False,
                     "error": "No active window handle found.",
                 }
@@ -284,13 +287,13 @@ class UIAClient:
                     "window": win_info,
                     "elements": [],
                     "element_count": 0,
+                    "max_depth": max_depth,
                     "truncated": False,
                     "error": "Failed to initialize UIAutomation COM client.",
                 }
 
             p_win_elem = c_void_p()
             p_condition = c_void_p()
-            p_array = c_void_p()
 
             try:
                 vtbl_uia = ctypes.cast(p_uia.value, POINTER(POINTER(c_void_p))).contents
@@ -303,6 +306,7 @@ class UIAClient:
                         "window": win_info,
                         "elements": [],
                         "element_count": 0,
+                        "max_depth": max_depth,
                         "truncated": False,
                         "error": f"ElementFromHandle failed for HWND {target_hwnd}.",
                     }
@@ -315,27 +319,20 @@ class UIAClient:
                         "window": win_info,
                         "elements": [],
                         "element_count": 0,
+                        "max_depth": max_depth,
                         "truncated": False,
                         "error": "Failed to create UIA search condition.",
                     }
 
-                # FindAll (index 6 on IUIAutomationElement)
-                vtbl_elem = ctypes.cast(p_win_elem.value, POINTER(POINTER(c_void_p))).contents
+                from collections import deque
+
+                queue = deque([(p_win_elem, 0)])
+                elements: List[Dict[str, Any]] = []
+                truncated = False
+                total_discovered = 0
+
                 proto_FindAll = WINFUNCTYPE(HRESULT, c_void_p, c_int, c_void_p, POINTER(c_void_p))
-                hr = proto_FindAll(vtbl_elem[6])(p_win_elem, TreeScope_Descendants, p_condition, byref(p_array))
-                if hr != 0 or not p_array.value:
-                    return {
-                        "window": win_info,
-                        "elements": [],
-                        "element_count": 0,
-                        "truncated": False,
-                    }
-
-                vtbl_arr = ctypes.cast(p_array.value, POINTER(POINTER(c_void_p))).contents
                 proto_get_Length = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_int))
-                total_count = c_int(0)
-                proto_get_Length(vtbl_arr[3])(p_array, byref(total_count))
-
                 proto_GetElement = WINFUNCTYPE(HRESULT, c_void_p, c_int, POINTER(c_void_p))
                 proto_GetName = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))
                 proto_GetType = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_int))
@@ -343,94 +340,127 @@ class UIAClient:
                 proto_GetBool = WINFUNCTYPE(HRESULT, c_void_p, POINTER(wintypes.BOOL))
                 proto_GetString = WINFUNCTYPE(HRESULT, c_void_p, POINTER(c_void_p))
 
-                elements: List[Dict[str, Any]] = []
-                truncated = False
-
-                for i in range(total_count.value):
-                    if len(elements) >= max_elements:
-                        truncated = True
-                        break
-
-                    p_child = c_void_p()
-                    hr = proto_GetElement(vtbl_arr[4])(p_array, i, byref(p_child))
-                    if hr != 0 or not p_child.value:
+                while queue and len(elements) < max_elements:
+                    curr_elem, curr_depth = queue.popleft()
+                    if curr_depth >= max_depth:
+                        if curr_elem.value != p_win_elem.value:
+                            self._release(curr_elem)
                         continue
 
-                    try:
-                        vtbl_child = ctypes.cast(p_child.value, POINTER(POINTER(c_void_p))).contents
+                    vtbl_curr = ctypes.cast(curr_elem.value, POINTER(POINTER(c_void_p))).contents
+                    p_child_arr = c_void_p()
+                    hr_find = proto_FindAll(vtbl_curr[6])(curr_elem, TreeScope_Children, p_condition, byref(p_child_arr))
+                    if hr_find == 0 and p_child_arr.value:
+                        vtbl_arr = ctypes.cast(p_child_arr.value, POINTER(POINTER(c_void_p))).contents
+                        count = c_int(0)
+                        proto_get_Length(vtbl_arr[3])(p_child_arr, byref(count))
+                        total_discovered += count.value
 
-                        # ControlType (index 21)
-                        c_type = c_int(0)
-                        proto_GetType(vtbl_child[21])(p_child, byref(c_type))
-                        type_str = UIA_CONTROL_TYPES.get(c_type.value, f"Control_{c_type.value}")
+                        for i in range(count.value):
+                            if len(elements) >= max_elements:
+                                truncated = True
+                                break
 
-                        if control_type_filter and control_type_filter.lower() != type_str.lower():
-                            continue
+                            p_child = c_void_p()
+                            hr_elem = proto_GetElement(vtbl_arr[4])(p_child_arr, i, byref(p_child))
+                            if hr_elem != 0 or not p_child.value:
+                                continue
 
-                        # Name (index 23)
-                        p_name = c_void_p()
-                        proto_GetName(vtbl_child[23])(p_child, byref(p_name))
-                        name = ctypes.wstring_at(p_name.value) if p_name.value else ""
-                        if p_name.value:
-                            SysFreeString(p_name)
+                            try:
+                                vtbl_child = ctypes.cast(p_child.value, POINTER(POINTER(c_void_p))).contents
 
-                        # BoundingRectangle (index 43)
-                        rc = tagRECT()
-                        proto_GetRect(vtbl_child[43])(p_child, byref(rc))
-                        w = max(0, rc.right - rc.left)
-                        h = max(0, rc.bottom - rc.top)
-                        center = [rc.left + w // 2, rc.top + h // 2]
+                                # ControlType (index 21)
+                                c_type = c_int(0)
+                                proto_GetType(vtbl_child[21])(p_child, byref(c_type))
+                                type_str = UIA_CONTROL_TYPES.get(c_type.value, f"Control_{c_type.value}")
 
-                        # Enabled (index 28)
-                        is_enabled = wintypes.BOOL(True)
-                        proto_GetBool(vtbl_child[28])(p_child, byref(is_enabled))
+                                # Name (index 23)
+                                p_name = c_void_p()
+                                proto_GetName(vtbl_child[23])(p_child, byref(p_name))
+                                name = ctypes.wstring_at(p_name.value) if p_name.value else ""
+                                if p_name.value:
+                                    SysFreeString(p_name)
 
-                        # HasKeyboardFocus (index 26)
-                        has_focus = wintypes.BOOL(False)
-                        proto_GetBool(vtbl_child[26])(p_child, byref(has_focus))
+                                # BoundingRectangle (index 43)
+                                rc = tagRECT()
+                                proto_GetRect(vtbl_child[43])(p_child, byref(rc))
+                                w = max(0, rc.right - rc.left)
+                                h = max(0, rc.bottom - rc.top)
+                                center = [rc.left + w // 2, rc.top + h // 2]
 
-                        # AutomationId (index 29)
-                        p_auto_id = c_void_p()
-                        proto_GetString(vtbl_child[29])(p_child, byref(p_auto_id))
-                        auto_id = ctypes.wstring_at(p_auto_id.value) if p_auto_id.value else ""
-                        if p_auto_id.value:
-                            SysFreeString(p_auto_id)
+                                # Enabled (index 28)
+                                is_enabled = wintypes.BOOL(True)
+                                proto_GetBool(vtbl_child[28])(p_child, byref(is_enabled))
 
-                        # ClassName (index 30)
-                        p_cls = c_void_p()
-                        proto_GetString(vtbl_child[30])(p_child, byref(p_cls))
-                        cls_name = ctypes.wstring_at(p_cls.value) if p_cls.value else ""
-                        if p_cls.value:
-                            SysFreeString(p_cls)
+                                # HasKeyboardFocus (index 26)
+                                has_focus = wintypes.BOOL(False)
+                                proto_GetBool(vtbl_child[26])(p_child, byref(has_focus))
 
-                        elem_dict = {
-                            "name": name,
-                            "control_type": type_str,
-                            "control_type_id": c_type.value,
-                            "rect": {
-                                "left": rc.left,
-                                "top": rc.top,
-                                "right": rc.right,
-                                "bottom": rc.bottom,
-                                "width": w,
-                                "height": h,
-                            },
-                            "center": center,
-                            "enabled": bool(is_enabled.value),
-                            "focused": bool(has_focus.value),
-                            "automation_id": auto_id,
-                            "class_name": cls_name,
-                        }
-                        elements.append(elem_dict)
+                                # AutomationId (index 29)
+                                p_auto_id = c_void_p()
+                                proto_GetString(vtbl_child[29])(p_child, byref(p_auto_id))
+                                auto_id = ctypes.wstring_at(p_auto_id.value) if p_auto_id.value else ""
+                                if p_auto_id.value:
+                                    SysFreeString(p_auto_id)
 
-                    finally:
-                        self._release(p_child)
+                                # ClassName (index 30)
+                                p_cls = c_void_p()
+                                proto_GetString(vtbl_child[30])(p_child, byref(p_cls))
+                                cls_name = ctypes.wstring_at(p_cls.value) if p_cls.value else ""
+                                if p_cls.value:
+                                    SysFreeString(p_cls)
+
+                                passes_filter = True
+                                if control_type_filter and control_type_filter.lower() != type_str.lower():
+                                    passes_filter = False
+
+                                if passes_filter:
+                                    elem_dict = {
+                                        "name": name,
+                                        "control_type": type_str,
+                                        "control_type_id": c_type.value,
+                                        "rect": {
+                                            "left": rc.left,
+                                            "top": rc.top,
+                                            "right": rc.right,
+                                            "bottom": rc.bottom,
+                                            "width": w,
+                                            "height": h,
+                                        },
+                                        "center": center,
+                                        "enabled": bool(is_enabled.value),
+                                        "focused": bool(has_focus.value),
+                                        "automation_id": auto_id,
+                                        "class_name": cls_name,
+                                        "depth": curr_depth + 1,
+                                    }
+                                    elements.append(elem_dict)
+
+                                if curr_depth + 1 < max_depth:
+                                    queue.append((p_child, curr_depth + 1))
+                                else:
+                                    self._release(p_child)
+
+                            except Exception:
+                                self._release(p_child)
+
+                        self._release(p_child_arr)
+
+                    if curr_elem.value != p_win_elem.value:
+                        self._release(curr_elem)
+
+                # Drain remaining queue elements cleanly
+                while queue:
+                    q_elem, _ = queue.popleft()
+                    if q_elem.value != p_win_elem.value:
+                        self._release(q_elem)
 
                 return {
                     "window": win_info,
                     "elements": elements,
                     "element_count": len(elements),
-                    "total_discovered": total_count.value,
+                    "total_discovered": total_discovered,
+                    "max_depth": max_depth,
                     "truncated": truncated,
                 }
 
@@ -439,11 +469,11 @@ class UIAClient:
                     "window": win_info,
                     "elements": [],
                     "element_count": 0,
+                    "max_depth": max_depth,
                     "truncated": False,
                     "error": f"UIA traversal error: {e}",
                 }
             finally:
-                self._release(p_array)
                 self._release(p_condition)
                 self._release(p_win_elem)
                 self._release(p_uia)
