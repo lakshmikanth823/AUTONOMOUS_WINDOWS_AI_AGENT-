@@ -106,7 +106,20 @@ class SensitiveActionTool(Tool):
         return ToolResult(success=True, output=f"Executed sensitive action: {args.get('action')}")
 
 
-# Register initial tools
+# Register foundational and Phase 3 tools
 registry.register(EchoTool())
 registry.register(SystemInfoTool())
 registry.register(SensitiveActionTool())
+
+# Phase 3 Safe Windows Computer Tools
+from agent.tools.filesystem import FilesystemTool
+from agent.tools.terminal import TerminalTool
+from agent.tools.python_runner import PythonRunnerTool
+from agent.tools.browser import BrowserTool
+from agent.tools.computer import ComputerTool
+
+registry.register(FilesystemTool())
+registry.register(TerminalTool())
+registry.register(PythonRunnerTool())
+registry.register(BrowserTool())
+registry.register(ComputerTool())
