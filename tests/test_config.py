@@ -1,131 +1,251 @@
-"""Unit tests for configuration, permissions, state models, and logging."""
+"""Comprehensive unit tests for Phase 1: Configuration, Tasks, Tools, Permissions, Logging, and Errors."""
 
-import os
 from pathlib import Path
 from unittest.mock import patch
-
 import pytest
 
 from agent.config.permissions import (
-    PermissionScope,
-    RiskLevel,
-    classify_command_risk,
-    requires_approval,
+    PermissionLevel,
+    can_auto_execute,
+    classify_command_permission,
 )
 from agent.config.settings import Settings, get_settings
-from agent.core.state import AgentState, AgentStatus, StepResult, Subtask, TaskPlan
+from agent.core.state import Task, TaskStatus
+from agent.exceptions import (
+    AgentError,
+    ConfigError,
+    PermissionDeniedError,
+    ToolError,
+    ToolExecutionError,
+    ToolNotFoundError,
+    VerificationFailedError,
+)
 from agent.logger import get_task_logger, init_logger
-from agent.main import main
+from agent.main import cmd_task, main
+from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.registry import ToolRegistry, registry
 
+
+# ==============================================================================
+# 1. Configuration & Secret Masking Tests
+# ==============================================================================
 
 def test_default_settings():
-    """Verify default settings values."""
+    """Verify default settings values and local-first defaults."""
     settings = Settings()
     assert settings.llm_provider == "ollama"
     assert "11434" in settings.ollama_base_url
     assert settings.ollama_model == "hermes3:8b"
     assert settings.require_human_approval is True
-    assert settings.auto_approve_max_risk == RiskLevel.LOW_RISK
+    assert settings.auto_approve_max_level == PermissionLevel.LOW_RISK
 
 
-def test_risk_level_ordering():
-    """Verify RiskLevel severity comparison semantics."""
-    assert RiskLevel.READ_ONLY < RiskLevel.LOW_RISK
-    assert RiskLevel.LOW_RISK < RiskLevel.SENSITIVE
-    assert RiskLevel.SENSITIVE < RiskLevel.DANGEROUS
-    assert RiskLevel.DANGEROUS < RiskLevel.IRREVERSIBLE
+def test_safe_dict_masks_secrets():
+    """Verify that safe_dict masks sensitive API credentials and protects secrets."""
+    settings = Settings(
+        openai_api_key="sk-test-secret-12345",
+        anthropic_api_key="ant-secret-key-67890",
+        gemini_api_key="gem-secret-key-99999",
+    )
+    safe = settings.safe_dict()
 
-    assert RiskLevel.IRREVERSIBLE >= RiskLevel.DANGEROUS
-    assert RiskLevel.READ_ONLY <= RiskLevel.LOW_RISK
+    # Verify plain-text keys are NEVER exposed
+    assert "sk-test-secret-12345" not in str(safe)
+    assert "ant-secret-key-67890" not in str(safe)
+    assert "gem-secret-key-99999" not in str(safe)
+
+    # Verify masked markers are present
+    assert "***[CONFIGURED:" in safe["openai_api_key"]
+    assert "***[CONFIGURED:" in safe["anthropic_api_key"]
+    assert "***[CONFIGURED:" in safe["gemini_api_key"]
 
 
-def test_classify_command_risk():
-    """Verify command categorization by risk level."""
-    # Read only commands
-    assert classify_command_risk("dir") == RiskLevel.READ_ONLY
-    assert classify_command_risk("git status") == RiskLevel.READ_ONLY
-    assert classify_command_risk("Get-ChildItem") == RiskLevel.READ_ONLY
-    assert classify_command_risk("whoami") == RiskLevel.READ_ONLY
+# ==============================================================================
+# 2. Permission Level & Command Safety Tests
+# ==============================================================================
+
+def test_permission_level_hierarchy():
+    """Verify PermissionLevel severity hierarchy and comparisons."""
+    assert PermissionLevel.SAFE < PermissionLevel.LOW_RISK
+    assert PermissionLevel.LOW_RISK < PermissionLevel.REQUIRES_APPROVAL
+    assert PermissionLevel.REQUIRES_APPROVAL < PermissionLevel.BLOCKED
+
+    assert PermissionLevel.BLOCKED >= PermissionLevel.REQUIRES_APPROVAL
+    assert PermissionLevel.SAFE <= PermissionLevel.LOW_RISK
+
+
+def test_classify_command_permission():
+    """Verify deterministic command classification into appropriate permission tiers."""
+    # Safe inspection commands
+    assert classify_command_permission("dir") == PermissionLevel.SAFE
+    assert classify_command_permission("git status") == PermissionLevel.SAFE
+    assert classify_command_permission("Get-ChildItem") == PermissionLevel.SAFE
+    assert classify_command_permission("whoami") == PermissionLevel.SAFE
+    assert classify_command_permission("python --version") == PermissionLevel.SAFE
 
     # Low risk commands
-    assert classify_command_risk("python test.py") == RiskLevel.LOW_RISK
-    assert classify_command_risk("pytest tests/") == RiskLevel.LOW_RISK
+    assert classify_command_permission("python script.py") == PermissionLevel.LOW_RISK
+    assert classify_command_permission("pytest tests/") == PermissionLevel.LOW_RISK
 
-    # Sensitive commands
-    assert classify_command_risk("git push origin main") == RiskLevel.SENSITIVE
-    assert classify_command_risk("Invoke-WebRequest https://example.com") == RiskLevel.SENSITIVE
-    assert classify_command_risk("pip install some-package") == RiskLevel.SENSITIVE
+    # Operations requiring approval
+    assert classify_command_permission("Remove-Item -Recurse my_dir") == PermissionLevel.REQUIRES_APPROVAL
+    assert classify_command_permission("rmdir /s /q temp") == PermissionLevel.REQUIRES_APPROVAL
+    assert classify_command_permission("taskkill /f /im test.exe") == PermissionLevel.REQUIRES_APPROVAL
+    assert classify_command_permission("git push origin master") == PermissionLevel.REQUIRES_APPROVAL
+    assert classify_command_permission("pip install requests") == PermissionLevel.REQUIRES_APPROVAL
 
-    # Dangerous commands
-    assert classify_command_risk("Remove-Item -Recurse foo") == RiskLevel.DANGEROUS
-    assert classify_command_risk("rmdir /s /q temp") == RiskLevel.DANGEROUS
-    assert classify_command_risk("taskkill /f /im test.exe") == RiskLevel.DANGEROUS
-
-    # Irreversible commands
-    assert classify_command_risk("Format-Volume -DriveLetter D") == RiskLevel.IRREVERSIBLE
-    assert classify_command_risk("format.com c:") == RiskLevel.IRREVERSIBLE
-    assert classify_command_risk("diskpart") == RiskLevel.IRREVERSIBLE
+    # Permanently blocked destructive commands
+    assert classify_command_permission("Format-Volume -DriveLetter D") == PermissionLevel.BLOCKED
+    assert classify_command_permission("format.com c:") == PermissionLevel.BLOCKED
+    assert classify_command_permission("diskpart") == PermissionLevel.BLOCKED
 
 
-def test_requires_approval():
-    """Test approval decision logic based on risk tiers."""
-    # When approval is disabled
-    assert requires_approval(RiskLevel.IRREVERSIBLE, RiskLevel.LOW_RISK, approval_enabled=False) is False
-
-    # When approval is enabled
-    assert requires_approval(RiskLevel.READ_ONLY, RiskLevel.LOW_RISK) is False
-    assert requires_approval(RiskLevel.LOW_RISK, RiskLevel.LOW_RISK) is False
-    assert requires_approval(RiskLevel.SENSITIVE, RiskLevel.LOW_RISK) is True
-    assert requires_approval(RiskLevel.DANGEROUS, RiskLevel.LOW_RISK) is True
-    assert requires_approval(RiskLevel.IRREVERSIBLE, RiskLevel.LOW_RISK) is True
+def test_can_auto_execute():
+    """Verify auto-execution policy logic."""
+    assert can_auto_execute(PermissionLevel.SAFE, PermissionLevel.LOW_RISK) is True
+    assert can_auto_execute(PermissionLevel.LOW_RISK, PermissionLevel.LOW_RISK) is True
+    assert can_auto_execute(PermissionLevel.REQUIRES_APPROVAL, PermissionLevel.LOW_RISK) is False
+    assert can_auto_execute(PermissionLevel.BLOCKED, PermissionLevel.LOW_RISK) is False
+    # BLOCKED is never auto-executed even if approval is disabled
+    assert can_auto_execute(PermissionLevel.BLOCKED, PermissionLevel.LOW_RISK, approval_enabled=False) is False
 
 
-def test_state_models():
-    """Verify agent state models instantiation and lifecycle."""
-    subtask = Subtask(
-        title="Analyze directory",
-        description="Inspect files in current folder",
-        required_tools=["filesystem:list"],
-    )
-    assert subtask.status == "pending"
-    assert subtask.id.startswith("subtask_")
+# ==============================================================================
+# 3. Task & State Model Tests
+# ==============================================================================
 
-    plan = TaskPlan(
-        goal="Audit codebase",
-        summary="Comprehensive codebase inspection",
-        subtasks=[subtask],
-    )
-    assert len(plan.subtasks) == 1
+def test_task_creation_and_attributes():
+    """Verify Task model structure, default values, and required attributes."""
+    task = Task(user_goal="Audit Windows environment")
 
-    state = AgentState(user_goal="Audit codebase", plan=plan)
-    assert state.status == AgentStatus.IDLE
-    assert state.task_id.startswith("task_")
-
-    step = StepResult(
-        tool_name="filesystem:list",
-        arguments={"path": "."},
-        success=True,
-        output=["file1.txt", "file2.txt"],
-        verification_passed=True,
-    )
-    state.action_history.append(step)
-    assert len(state.action_history) == 1
-    assert state.action_history[0].verification_passed is True
+    assert task.task_id.startswith("task_")
+    assert task.user_goal == "Audit Windows environment"
+    assert task.status == TaskStatus.PENDING
+    assert isinstance(task.created_at, str)
+    assert isinstance(task.updated_at, str)
+    assert task.current_step == 0
+    assert isinstance(task.plan, list)
+    assert isinstance(task.results, list)
+    assert isinstance(task.errors, list)
 
 
-def test_logger_setup(tmp_path: Path):
-    """Verify logger initialization and binding."""
+def test_task_mark_updated():
+    """Verify task timestamp updates upon modification."""
+    task = Task(user_goal="Update test")
+    initial_time = task.updated_at
+    task.mark_updated()
+    assert task.updated_at >= initial_time
+
+
+# ==============================================================================
+# 4. Tool & Tool Registry Tests
+# ==============================================================================
+
+class DummyTestTool(Tool):
+    """Custom tool for registry testing."""
+    name = "dummy_calculator"
+    description = "Adds two numbers together."
+    permission_level = PermissionLevel.SAFE
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "number"},
+            "b": {"type": "number"},
+        },
+        "required": ["a", "b"],
+    }
+
+    def execute(self, args):
+        a = args.get("a", 0)
+        b = args.get("b", 0)
+        return ToolResult(success=True, output=a + b)
+
+
+def test_tool_registry():
+    """Verify registering, retrieving, and listing tools."""
+    custom_registry = ToolRegistry()
+    dummy = DummyTestTool()
+
+    assert not custom_registry.has("dummy_calculator")
+    custom_registry.register(dummy)
+    assert custom_registry.has("dummy_calculator")
+
+    tool = custom_registry.get("dummy_calculator")
+    assert tool.name == "dummy_calculator"
+
+    # Execution through registry
+    result = custom_registry.execute("dummy_calculator", {"a": 10, "b": 25})
+    assert result.success is True
+    assert result.output == 35
+
+    # Verification through registry
+    verif = custom_registry.verify("dummy_calculator", {"a": 10, "b": 25}, result)
+    assert verif.passed is True
+
+
+def test_tool_not_found():
+    """Verify ToolNotFoundError is raised when an unknown tool is accessed."""
+    custom_registry = ToolRegistry()
+    with pytest.raises(ToolNotFoundError):
+        custom_registry.get("nonexistent_tool")
+
+
+def test_tool_invalid_type():
+    """Verify TypeError is raised when registering non-Tool instance."""
+    custom_registry = ToolRegistry()
+    with pytest.raises(TypeError):
+        custom_registry.register("not_a_tool")  # type: ignore
+
+
+def test_default_registry_tools():
+    """Verify built-in tools in global registry."""
+    assert registry.has("echo")
+    assert registry.has("system_info")
+    assert registry.has("sensitive_operation")
+
+    echo_result = registry.execute("echo", {"message": "Hello Windows Agent"})
+    assert echo_result.success is True
+    assert echo_result.output == "Hello Windows Agent"
+
+
+# ==============================================================================
+# 5. Logging Tests
+# ==============================================================================
+
+def test_structured_logging(tmp_path: Path):
+    """Verify logger initialization and task logger binding."""
     with patch("agent.logger.get_settings") as mock_settings:
         mock_settings.return_value = Settings(
             logs_dir=tmp_path / "logs",
             data_dir=tmp_path / "data",
         )
         init_logger()
-        task_logger = get_task_logger("task_test_123", "act_456")
-        task_logger.info("Test log entry")
+        task_logger = get_task_logger("task_phase1_test", "act_001")
+        task_logger.info("Structured log test message")
 
 
-def test_cli_info_command():
-    """Verify CLI 'info' subcommand executes without error."""
-    exit_code = main(["info"])
-    assert exit_code == 0
+# ==============================================================================
+# 6. Error Handling Tests
+# ==============================================================================
+
+def test_exception_hierarchy():
+    """Verify agent custom exceptions properly inherit from AgentError."""
+    assert issubclass(ConfigError, AgentError)
+    assert issubclass(PermissionDeniedError, AgentError)
+    assert issubclass(ToolError, AgentError)
+    assert issubclass(ToolNotFoundError, ToolError)
+    assert issubclass(ToolExecutionError, ToolError)
+    assert issubclass(VerificationFailedError, AgentError)
+
+
+# ==============================================================================
+# 7. CLI Command Dispatcher Tests
+# ==============================================================================
+
+def test_cli_commands():
+    """Verify CLI subcommands execute cleanly."""
+    assert main(["status"]) == 0
+    assert main(["tools"]) == 0
+    assert main(["config"]) == 0
+    assert main(["memory"]) == 0
+    assert main(["task", "Inspect environment status"]) == 0

@@ -9,19 +9,30 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
-class AgentStatus(str, Enum):
-    """Lifecycle states of the autonomous agent."""
+class TaskStatus(str, Enum):
+    """Lifecycle statuses for an individual task."""
 
-    IDLE = "idle"
-    UNDERSTANDING = "understanding"
-    PLANNING = "planning"
-    EXECUTING = "executing"
-    AWAITING_APPROVAL = "awaiting_approval"
-    VERIFYING = "verifying"
-    DIAGNOSING = "diagnosing"
-    RECOVERING = "recovering"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class AgentStatus(str, Enum):
+    """Lifecycle states of the autonomous agent system."""
+
+    IDLE = "IDLE"
+    UNDERSTANDING = "UNDERSTANDING"
+    PLANNING = "PLANNING"
+    EXECUTING = "EXECUTING"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
+    VERIFYING = "VERIFYING"
+    DIAGNOSING = "DIAGNOSING"
+    RECOVERING = "RECOVERING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 class Subtask(BaseModel):
@@ -32,7 +43,7 @@ class Subtask(BaseModel):
     description: str
     dependencies: List[str] = Field(default_factory=list)
     required_tools: List[str] = Field(default_factory=list)
-    status: str = Field(default="pending")  # pending, in_progress, completed, failed, skipped
+    status: str = Field(default="pending")
     retry_count: int = Field(default=0)
     result: Optional[str] = None
     error: Optional[str] = None
@@ -53,6 +64,28 @@ class StepResult(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+
+
+class Task(BaseModel):
+    """Core task tracking model required for agent execution."""
+
+    task_id: str = Field(default_factory=lambda: f"task_{uuid.uuid4().hex[:10]}")
+    user_goal: str
+    status: TaskStatus = Field(default=TaskStatus.PENDING)
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    current_step: int = Field(default=0)
+    plan: List[Dict[str, Any]] = Field(default_factory=list)
+    results: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+
+    def mark_updated(self) -> None:
+        """Refresh updated_at timestamp."""
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
 
 class TaskPlan(BaseModel):
@@ -81,5 +114,5 @@ class AgentState(BaseModel):
     )
 
     def mark_updated(self) -> None:
-        """Update the timestamp."""
+        """Update timestamp."""
         self.updated_at = datetime.now(timezone.utc).isoformat()

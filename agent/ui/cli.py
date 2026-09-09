@@ -1,9 +1,9 @@
-"""Rich terminal UI helper for banners, system info, and interactive prompts."""
+"""Rich terminal UI helper for banners, system info, tables, and prompts."""
 
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from rich.console import Console
 from rich.panel import Panel
@@ -11,7 +11,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
-from agent.config.permissions import RiskLevel
+from agent.config.permissions import PermissionLevel
 
 console = Console()
 
@@ -35,7 +35,7 @@ def print_banner() -> None:
 
 def print_system_info(settings: Any, ollama_status: Dict[str, Any]) -> None:
     """Display environment configuration and active providers."""
-    table = Table(title="System & Runtime Configuration", border_style="dim")
+    table = Table(title="System & Runtime Status", border_style="dim")
     table.add_column("Property", style="bold green")
     table.add_column("Value", style="yellow")
 
@@ -44,48 +44,112 @@ def print_system_info(settings: Any, ollama_status: Dict[str, Any]) -> None:
     table.add_row("Configured LLM Provider", settings.llm_provider)
     table.add_row("Ollama Host", settings.ollama_base_url)
     table.add_row("Ollama Model", settings.ollama_model)
-    table.add_row("Ollama Online", "[green]YES[/green]" if ollama_status.get("online") else "[red]NO[/red]")
+    table.add_row(
+        "Ollama Online",
+        "[green]YES[/green]" if ollama_status.get("online") else "[red]NO[/red]",
+    )
     if ollama_status.get("models"):
         table.add_row("Ollama Installed Models", ", ".join(ollama_status["models"]))
 
     table.add_row("Workspace Root", str(settings.workspace_root))
     table.add_row("Approval Required", str(settings.require_human_approval))
-    table.add_row("Auto-Approve Risk Limit", settings.auto_approve_max_risk.value)
+    table.add_row("Auto-Approve Risk Limit", settings.auto_approve_max_level.value)
     table.add_row("Log Level", settings.log_level)
 
     console.print(table)
 
 
+def print_tools_table(tools: List[Any]) -> None:
+    """Display registered tools, permission tiers, and schemas."""
+    table = Table(title="Registered Agent Tools", border_style="cyan")
+    table.add_column("Tool Name", style="bold green")
+    table.add_column("Permission Level", style="bold")
+    table.add_column("Description", style="white")
+
+    perm_colors = {
+        PermissionLevel.SAFE: "green",
+        PermissionLevel.LOW_RISK: "blue",
+        PermissionLevel.REQUIRES_APPROVAL: "yellow",
+        PermissionLevel.BLOCKED: "red",
+    }
+
+    for tool in tools:
+        color = perm_colors.get(tool.permission_level, "white")
+        table.add_row(
+            tool.name,
+            f"[{color}]{tool.permission_level.value}[/{color}]",
+            tool.description,
+        )
+
+    console.print(table)
+
+
+def print_config_table(config_data: Dict[str, Any]) -> None:
+    """Display configuration table with masked credentials."""
+    table = Table(title="Active Configuration (Credentials Masked)", border_style="magenta")
+    table.add_column("Setting", style="bold cyan")
+    table.add_column("Value", style="yellow")
+
+    for key, value in sorted(config_data.items()):
+        table.add_row(key, str(value))
+
+    console.print(table)
+
+
+def print_task_card(task: Any) -> None:
+    """Render a visual card summarizing a task."""
+    status_colors = {
+        "PENDING": "yellow",
+        "RUNNING": "cyan",
+        "COMPLETED": "green",
+        "FAILED": "red",
+        "WAITING_APPROVAL": "bold magenta",
+    }
+    status_str = getattr(task.status, "value", str(task.status))
+    color = status_colors.get(status_str, "white")
+
+    content = (
+        f"[bold]Task ID:[/bold] {task.task_id}\n"
+        f"[bold]Goal:[/bold] {task.user_goal}\n"
+        f"[bold]Status:[/bold] [{color}]{status_str}[/{color}]\n"
+        f"[bold]Created At:[/bold] {task.created_at}\n"
+        f"[bold]Current Step:[/bold] {task.current_step}\n"
+        f"[bold]Plan Steps:[/bold] {len(task.plan)}\n"
+        f"[bold]Results:[/bold] {len(task.results)}\n"
+        f"[bold]Errors:[/bold] {len(task.errors)}"
+    )
+    console.print(Panel(content, title=f"[bold]Task: {task.task_id}[/bold]", border_style="blue"))
+
+
 def prompt_for_approval(
     action_name: str,
     arguments: Dict[str, Any],
-    risk_level: RiskLevel,
+    permission_level: PermissionLevel,
     reason: str = "",
 ) -> bool:
-    """Request human confirmation for dangerous or sensitive operations."""
-    risk_styles = {
-        RiskLevel.READ_ONLY: "green",
-        RiskLevel.LOW_RISK: "blue",
-        RiskLevel.SENSITIVE: "yellow",
-        RiskLevel.DANGEROUS: "bold red",
-        RiskLevel.IRREVERSIBLE: "bold white on red",
+    """Request human confirmation for operations requiring authorization."""
+    perm_styles = {
+        PermissionLevel.SAFE: "green",
+        PermissionLevel.LOW_RISK: "blue",
+        PermissionLevel.REQUIRES_APPROVAL: "bold yellow",
+        PermissionLevel.BLOCKED: "bold white on red",
     }
-    style = risk_styles.get(risk_level, "bold red")
+    style = perm_styles.get(permission_level, "bold red")
 
     console.print("\n")
     console.print(
         Panel(
             f"[bold]Action:[/bold] {action_name}\n"
-            f"[bold]Risk Level:[/bold] [{style}]{risk_level.value.upper()}[/{style}]\n"
+            f"[bold]Permission Level:[/bold] [{style}]{permission_level.value}[/{style}]\n"
             f"[bold]Arguments:[/bold] {arguments}\n"
-            f"[bold]Reason:[/bold] {reason or 'Requires human verification before proceeding.'}",
+            f"[bold]Reason:[/bold] {reason or 'Requires explicit human authorization.'}",
             title="[bold red]SECURITY APPROVAL REQUIRED[/bold red]",
             border_style="red",
         )
     )
 
     try:
-        return Confirm.ask("[bold yellow]Do you authorize this action to proceed?[/bold yellow]", default=False)
+        return Confirm.ask("[bold yellow]Authorize this action to proceed?[/bold yellow]", default=False)
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[red]Action cancelled by user interrupt.[/red]")
+        console.print("\n[red]Action rejected by user.[/red]")
         return False

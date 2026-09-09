@@ -2,12 +2,12 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from agent.config.permissions import RiskLevel
+from agent.config.permissions import PermissionLevel
 
 
 class Settings(BaseSettings):
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     # Security & Governance
     require_human_approval: bool = Field(default=True)
-    auto_approve_max_risk: RiskLevel = Field(default=RiskLevel.LOW_RISK)
+    auto_approve_max_level: PermissionLevel = Field(default=PermissionLevel.LOW_RISK)
     workspace_root: Path = Field(default_factory=lambda: Path("e:/AI_").resolve())
 
     # Observability & Paths
@@ -66,6 +66,28 @@ class Settings(BaseSettings):
         """Ensure runtime directories exist."""
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def safe_dict(self) -> Dict[str, Any]:
+        """Return configuration dictionary with sensitive credentials masked."""
+        data = self.model_dump()
+        sensitive_keys = {
+            "openai_api_key",
+            "anthropic_api_key",
+            "gemini_api_key",
+        }
+        for key in sensitive_keys:
+            if key in data:
+                val = data[key]
+                if val:
+                    data[key] = f"***[CONFIGURED: {len(val)} chars]***"
+                else:
+                    data[key] = "[NOT CONFIGURED]"
+        # Stringify paths
+        data["workspace_root"] = str(data["workspace_root"])
+        data["logs_dir"] = str(data["logs_dir"])
+        data["data_dir"] = str(data["data_dir"])
+        data["auto_approve_max_level"] = self.auto_approve_max_level.value
+        return data
 
 
 @lru_cache()
