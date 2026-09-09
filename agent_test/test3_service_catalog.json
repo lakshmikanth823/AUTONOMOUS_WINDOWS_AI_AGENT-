@@ -1,0 +1,34 @@
+{
+  "source": "file:///E:/AI_/agent_test/test3_service_spec.html",
+  "service_count": 4,
+  "services": [
+    {
+      "name": "AuthService",
+      "port": 8081,
+      "protocol": "HTTPS",
+      "status": "HEALTHY",
+      "secure": true
+    },
+    {
+      "name": "PaymentGateway",
+      "port": 8443,
+      "protocol": "gRPC",
+      "status": "HEALTHY",
+      "secure": true
+    },
+    {
+      "name": "AnalyticsPipeline",
+      "port": 9092,
+      "protocol": "Kafka",
+      "status": "DEGRADED",
+      "secure": false
+    },
+    {
+      "name": "InferenceEngine",
+      "port": 11434,
+      "protocol": "HTTP",
+      "status": "HEALTHY",
+      "secure": false
+    }
+  ]
+}

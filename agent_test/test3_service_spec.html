@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>System Architecture Service Registry</title></head>
+<body>
+    <h1>Service Registry</h1>
+    <table id="services">
+        <thead><tr><th>Name</th><th>Port</th><th>Protocol</th><th>Health</th></tr></thead>
+        <tbody>
+            <tr><td>AuthService</td><td>8081</td><td>HTTPS</td><td>HEALTHY</td></tr>
+            <tr><td>PaymentGateway</td><td>8443</td><td>gRPC</td><td>HEALTHY</td></tr>
+            <tr><td>AnalyticsPipeline</td><td>9092</td><td>Kafka</td><td>DEGRADED</td></tr>
+            <tr><td>InferenceEngine</td><td>11434</td><td>HTTP</td><td>HEALTHY</td></tr>
+        </tbody>
+    </table>
+</body>
+</html>
