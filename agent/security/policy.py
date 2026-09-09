@@ -302,15 +302,41 @@ class SecurityPolicy:
         # 5. COMPUTER TOOL EVALUATION
         elif tool_name == "computer":
             action = str(sanitized_args.get("action", "")).strip()
-            if action == "keyboard_input":
+            known_computer_actions = {
+                "observe",
+                "screenshot",
+                "window_list",
+                "mouse_move",
+                "mouse_click",
+                "double_click",
+                "right_click",
+                "mouse_scroll",
+                "window_focus",
+                "keyboard_input",
+                "type_text",
+                "press_key",
+                "hotkey",
+            }
+            if action not in known_computer_actions:
+                return SecurityEvaluation(
+                    level=PermissionLevel.BLOCKED,
+                    reason=f"Computer action '{action}' is not recognized or permitted.",
+                    is_blocked=True,
+                    requires_human=True,
+                )
+
+            if action in ("keyboard_input", "type_text", "press_key", "hotkey"):
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
-                reason = "Sending raw keyboard input to active Windows desktop requires approval."
-            elif action in ("mouse_move", "mouse_click", "window_list", "window_focus"):
+                reason = f"Sending keyboard input/keys ('{action}') to Windows desktop requires explicit approval."
+            elif action in ("mouse_click", "double_click", "right_click", "mouse_scroll", "window_focus"):
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Desktop UI interaction: {action}"
-            else:
+            elif action in ("observe", "screenshot", "window_list", "mouse_move"):
                 computed_level = PermissionLevel.SAFE
-                reason = f"Desktop inspection: {action}"
+                reason = f"Desktop observation/cursor positioning: {action}"
+            else:
+                computed_level = PermissionLevel.LOW_RISK
+                reason = f"Desktop interaction: {action}"
 
         # 7. DEFAULT / OTHER REGISTERED TOOLS (e.g. echo, mocks)
         else:

@@ -25,7 +25,11 @@ RULES FOR PLANNING:
    - dependencies: List of preceding step_ids that must succeed before this step runs.
 5. If the goal requires destructive or blocked operations, flag them appropriately.
 6. Return ONLY valid JSON adhering strictly to the schema provided.
-7. For filesystem operations (create, read, modify files), use 'filesystem'. For running commands, scripts, or programs (e.g. 'python script.py'), use 'terminal'.
+7. TOOL SELECTION GUIDANCE:
+   - 'filesystem': For creating, reading, modifying, moving, copying, or deleting files and directories.
+   - 'terminal': For executing PowerShell commands, running Python/other programs, and launching or stopping processes.
+   - 'computer': For Windows desktop state observation (active window, cursor, resolution via 'observe'), capturing screenshots ('screenshot'), desktop window management ('window_list', 'window_focus'), and desktop GUI interaction ('mouse_click', 'type_text', 'press_key', 'hotkey').
+   - 'browser': For navigating web URLs, DOM inspection, web text extraction, and browser automation.
 """
 
 

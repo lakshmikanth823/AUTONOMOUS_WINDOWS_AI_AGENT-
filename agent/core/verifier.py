@@ -314,22 +314,199 @@ class Verifier:
         expected: str,
     ) -> VerificationRecord:
         out = result.output
-        if action == "screenshot":
-            if isinstance(out, dict) and "screenshot_path" in out:
+
+        if not isinstance(out, dict):
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Computer tool output is not a structured dictionary.",
+                status=VerificationStatus.FAILED,
+            )
+
+        if action == "observe":
+            has_screen = "screen" in out and isinstance(out["screen"], dict)
+            has_cursor = "cursor" in out and isinstance(out["cursor"], dict)
+            has_active = "active_window" in out
+            if not (has_screen and has_cursor and has_active):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Observation output missing required keys (screen, cursor, active_window).",
+                    status=VerificationStatus.FAILED,
+                )
+            if "screenshot_path" in out and out["screenshot_path"]:
+                p = Path(out["screenshot_path"])
+                if not (p.exists() and p.stat().st_size > 0):
+                    return VerificationRecord(
+                        action=action,
+                        expected_result=expected,
+                        observation=out,
+                        verification=f"Observation screenshot was not generated on disk: '{p}'.",
+                        status=VerificationStatus.FAILED,
+                    )
+            win_title = (out.get("active_window") or {}).get("title", "<none>")
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Desktop state observed: Active window '{win_title}', Screen {out['screen'].get('width')}x{out['screen'].get('height')}.",
+                status=VerificationStatus.VERIFIED,
+            )
+
+        elif action == "screenshot":
+            if "screenshot_path" in out:
                 p = Path(out["screenshot_path"])
                 if p.exists() and p.stat().st_size > 0:
                     return VerificationRecord(
                         action=action,
                         expected_result=expected,
                         observation=out,
-                        verification=f"Desktop capture verified: '{p}'.",
+                        verification=f"Desktop capture verified on disk: '{p}' ({p.stat().st_size} bytes).",
                         status=VerificationStatus.VERIFIED,
                     )
             return VerificationRecord(
                 action=action,
                 expected_result=expected,
                 observation=out,
-                verification="Desktop capture failed to create valid file.",
+                verification="Desktop capture failed to create valid non-empty file.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "window_list":
+            if "windows" in out and isinstance(out["windows"], list):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Window listing verified: {out.get('count', len(out['windows']))} visible windows enumerated.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Window list output missing 'windows' list.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "window_focus":
+            if out.get("focused") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Window successfully brought to foreground: '{out.get('title')}'.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Window focus failed: {out.get('message', 'Target window could not be focused')}.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "mouse_move":
+            if out.get("moved") is True or ("x" in out and "y" in out):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Cursor moved to coordinates ({out.get('x')}, {out.get('y')}).",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Mouse move reported unconfirmed status.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action in ("mouse_click", "double_click", "right_click"):
+            if out.get("clicked") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Mouse click verified at coordinates ({out.get('x')}, {out.get('y')}).",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Mouse click reported unconfirmed status.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "mouse_scroll":
+            if out.get("scrolled") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Mouse scroll verified ({out.get('clicks')} clicks).",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Mouse scroll reported unconfirmed status.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action in ("keyboard_input", "type_text"):
+            if "typed_chars" in out or "length" in out:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Text input verified ({out.get('length', 0)} characters sent).",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Keyboard input did not report confirmed characters.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "press_key":
+            if out.get("pressed") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Key press verified: '{out.get('key')}'.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Key press was not confirmed.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "hotkey":
+            if out.get("executed") is True:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Hotkey sequence verified: {out.get('hotkey')}.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Hotkey sequence was not confirmed.",
                 status=VerificationStatus.FAILED,
             )
 
