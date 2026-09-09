@@ -39,10 +39,6 @@ class VerificationRecord(BaseModel):
         return self.verification
 
 
-# Canonical alias consolidating the legacy VerificationResult abstraction
-VerificationResult = VerificationRecord
-
-
 class Verifier:
     """Verifies that actions succeeded in reality instead of assuming success."""
 
