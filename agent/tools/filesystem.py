@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class FilesystemTool(Tool):
@@ -181,43 +181,3 @@ class FilesystemTool(Tool):
 
         except Exception as e:
             return ToolResult(success=False, error=str(e))
-
-    def verify(self, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Deterministic post-action verification."""
-        if not result.success:
-            return VerificationResult(passed=False, details=f"Action failed: {result.error}")
-
-        action = args.get("action", "")
-        raw_path = args.get("path", "")
-        destination = args.get("destination", "")
-
-        try:
-            p = Path(raw_path).resolve()
-
-            if action in ("create_file", "modify_file"):
-                if not p.exists() or not p.is_file():
-                    return VerificationResult(passed=False, details=f"Verification failed: file '{p}' does not exist.")
-                return VerificationResult(passed=True, details=f"File '{p}' verified present and accessible.")
-
-            elif action == "create_directory":
-                if not p.exists() or not p.is_dir():
-                    return VerificationResult(passed=False, details=f"Verification failed: dir '{p}' does not exist.")
-                return VerificationResult(passed=True, details=f"Directory '{p}' verified present.")
-
-            elif action in ("delete_file", "delete_directory"):
-                if p.exists():
-                    return VerificationResult(passed=False, details=f"Verification failed: '{p}' still exists.")
-                return VerificationResult(passed=True, details=f"Deletion of '{p}' verified.")
-
-            elif action in ("move_file", "copy_file"):
-                dest = Path(destination).resolve()
-                if not dest.exists():
-                    return VerificationResult(passed=False, details=f"Destination '{dest}' does not exist.")
-                if action == "move_file" and p.exists():
-                    return VerificationResult(passed=False, details=f"Source '{p}' still exists after move.")
-                return VerificationResult(passed=True, details=f"Target '{dest}' verified.")
-
-        except Exception as e:
-            return VerificationResult(passed=False, details=f"Verification error: {e}")
-
-        return VerificationResult(passed=True, details="Action verified.")

@@ -14,7 +14,7 @@ from agent.config.permissions import (
     classify_command_permission,
 )
 from agent.config.settings import get_settings
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class TerminalTool(Tool):
@@ -145,20 +145,3 @@ class TerminalTool(Tool):
             )
         except Exception as e:
             return ToolResult(success=False, error=f"Execution error: {e}")
-
-    def verify(self, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Verify exit code and stderr output."""
-        if not result.success:
-            return VerificationResult(
-                passed=False,
-                details=f"Command failed with error: {result.error or 'non-zero exit code'}",
-            )
-
-        output = result.output
-        if isinstance(output, dict) and output.get("exit_code") == 0:
-            return VerificationResult(
-                passed=True,
-                details=f"Command exited cleanly (code 0) in {output.get('duration_seconds')}s.",
-            )
-
-        return VerificationResult(passed=False, details="Non-zero exit code detected.")

@@ -18,7 +18,7 @@ from agent.exceptions import (
 )
 from agent.llm.base import extract_json_payload
 from agent.llm.provider import MockLLMProvider
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry
 
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class BrowserTool(Tool):
@@ -161,25 +161,3 @@ class BrowserTool(Tool):
 
         except Exception as e:
             return ToolResult(success=False, error=f"Browser automation error: {e}")
-
-    def verify(self, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Verify navigation status and artifact generation."""
-        if not result.success:
-            return VerificationResult(passed=False, details=f"Browser action failed: {result.error}")
-
-        action = args.get("action", "")
-        if action == "screenshot":
-            out = result.output
-            if isinstance(out, dict) and "screenshot_path" in out:
-                p = Path(out["screenshot_path"])
-                if p.exists() and p.stat().st_size > 0:
-                    return VerificationResult(passed=True, details=f"Screenshot verified at {p}")
-                return VerificationResult(passed=False, details="Screenshot file was not generated or is empty.")
-
-        elif action == "extract_text":
-            out = result.output
-            if isinstance(out, dict) and out.get("length", 0) > 0:
-                return VerificationResult(passed=True, details="Text content successfully extracted.")
-            return VerificationResult(passed=False, details="No text content extracted.")
-
-        return VerificationResult(passed=True, details="Browser action completed successfully.")

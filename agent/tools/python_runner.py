@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class PythonRunnerTool(Tool):
@@ -116,15 +116,3 @@ class PythonRunnerTool(Tool):
                     tmp_path.unlink()
             except Exception:
                 pass
-
-    def verify(self, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Verify clean exit without runtime exceptions."""
-        if not result.success:
-            return VerificationResult(
-                passed=False,
-                details=f"Python execution failed: {result.error}",
-            )
-        return VerificationResult(
-            passed=True,
-            details="Python script executed with exit code 0.",
-        )

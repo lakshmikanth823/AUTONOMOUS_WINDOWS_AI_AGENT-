@@ -28,6 +28,20 @@ class VerificationRecord(BaseModel):
     verification: str = Field(description="Verification strategy and check outcome")
     status: VerificationStatus = Field(default=VerificationStatus.FAILED)
 
+    @property
+    def passed(self) -> bool:
+        """True if verification status is VERIFIED."""
+        return self.status == VerificationStatus.VERIFIED
+
+    @property
+    def details(self) -> str:
+        """Diagnostic verification details string."""
+        return self.verification
+
+
+# Canonical alias consolidating the legacy VerificationResult abstraction
+VerificationResult = VerificationRecord
+
 
 class Verifier:
     """Verifies that actions succeeded in reality instead of assuming success."""

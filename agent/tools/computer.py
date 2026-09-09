@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class ComputerTool(Tool):
@@ -160,27 +160,3 @@ class ComputerTool(Tool):
 
         except Exception as e:
             return ToolResult(success=False, error=f"Computer interaction error: {e}")
-
-    def verify(self, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Validate desktop actions."""
-        if not result.success:
-            return VerificationResult(passed=False, details=f"Desktop action failed: {result.error}")
-
-        action = args.get("action", "")
-        if action == "screenshot":
-            out = result.output
-            if isinstance(out, dict) and "screenshot_path" in out:
-                p = Path(out["screenshot_path"])
-                if p.exists() and p.stat().st_size > 0:
-                    return VerificationResult(passed=True, details=f"Screenshot verified at {p}")
-                return VerificationResult(passed=False, details="Screenshot missing or zero size.")
-
-        elif action in ("mouse_move", "mouse_click"):
-            width, height = self.get_screen_resolution()
-            x = args.get("x", 0)
-            y = args.get("y", 0)
-            if 0 <= x <= width and 0 <= y <= height:
-                return VerificationResult(passed=True, details=f"Coordinates ({x}, {y}) verified inside screen.")
-            return VerificationResult(passed=False, details="Coordinates out of bounds.")
-
-        return VerificationResult(passed=True, details="Computer action verified.")

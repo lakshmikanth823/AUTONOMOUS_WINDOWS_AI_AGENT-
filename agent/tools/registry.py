@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from agent.config.permissions import PermissionLevel
 from agent.exceptions import ToolNotFoundError
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 
 
 class ToolRegistry:
@@ -41,10 +41,10 @@ class ToolRegistry:
         tool = self.get(name)
         return tool.execute(args)
 
-    def verify(self, name: str, args: Dict[str, Any], result: ToolResult) -> VerificationResult:
-        """Verify tool execution."""
-        tool = self.get(name)
-        return tool.verify(args, result)
+    def verify(self, name: str, args: Dict[str, Any], result: ToolResult) -> Any:
+        """Verify tool execution via the central Verifier authority."""
+        from agent.core.verifier import default_verifier
+        return default_verifier.verify(name, args, result)
 
 
 # Global default registry instance

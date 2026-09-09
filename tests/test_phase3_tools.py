@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agent.config.permissions import PermissionLevel
+from agent.core.verifier import default_verifier
 from agent.tools.browser import BrowserTool
 from agent.tools.computer import ComputerTool
 from agent.tools.filesystem import FilesystemTool
@@ -26,18 +27,19 @@ def test_filesystem_lifecycle(tmp_path: Path):
     # 1. Create Directory
     res_dir = fs.execute({"action": "create_directory", "path": str(test_dir)})
     assert res_dir.success is True
-    verif_dir = fs.verify({"action": "create_directory", "path": str(test_dir)}, res_dir)
+    verif_dir = default_verifier.verify("filesystem", {"action": "create_directory", "path": str(test_dir)}, res_dir)
     assert verif_dir.passed is True
     assert test_dir.is_dir()
 
     # 2. Create File
-    res_file = fs.execute({
+    file_args = {
         "action": "create_file",
         "path": str(test_file),
         "content": "Hello Autonomous Windows Agent\nLine 2",
-    })
+    }
+    res_file = fs.execute(file_args)
     assert res_file.success is True
-    verif_file = fs.verify({"action": "create_file", "path": str(test_file)}, res_file)
+    verif_file = default_verifier.verify("filesystem", file_args, res_file)
     assert verif_file.passed is True
     assert test_file.is_file()
 
@@ -72,7 +74,7 @@ def test_filesystem_lifecycle(tmp_path: Path):
         "destination": str(copied_file),
     })
     assert res_copy.success is True
-    verif_copy = fs.verify({
+    verif_copy = default_verifier.verify("filesystem", {
         "action": "copy_file",
         "path": str(test_file),
         "destination": str(copied_file),
@@ -138,7 +140,7 @@ def test_terminal_safe_command(tmp_path: Path):
     assert "Windows Agent Terminal Active" in out["stdout"]
     assert out["duration_seconds"] >= 0.0
 
-    verif = term.verify({}, res)
+    verif = default_verifier.verify("terminal", {}, res)
     assert verif.passed is True
 
 
@@ -152,7 +154,7 @@ def test_terminal_failing_command(tmp_path: Path):
 
     assert res.success is False
     assert res.output["exit_code"] == 7
-    verif = term.verify({}, res)
+    verif = default_verifier.verify("terminal", {}, res)
     assert verif.passed is False
 
 
@@ -179,7 +181,7 @@ def test_python_runner_success():
     assert "SUCCESS" in res.output["stdout"]
     assert res.output["exit_code"] == 0
 
-    verif = py_tool.verify({}, res)
+    verif = default_verifier.verify("python_runner", {}, res)
     assert verif.passed is True
 
 
@@ -193,7 +195,7 @@ def test_python_runner_exception_capture():
     assert "ZeroDivisionError" in res.error
     assert res.output["exit_code"] != 0
 
-    verif = py_tool.verify({}, res)
+    verif = default_verifier.verify("python_runner", {}, res)
     assert verif.passed is False
 
 
@@ -245,7 +247,7 @@ def test_browser_automation_local_page(tmp_path: Path):
         "path": str(screenshot_path),
     })
     assert res_shot.success is True
-    verif_shot = browser.verify({"action": "screenshot"}, res_shot)
+    verif_shot = default_verifier.verify("browser", {"action": "screenshot", "path": str(screenshot_path)}, res_shot)
     assert verif_shot.passed is True
     assert screenshot_path.exists()
     assert screenshot_path.stat().st_size > 0
@@ -281,6 +283,6 @@ def test_computer_tool_coordinates_and_screen(tmp_path: Path):
     shot_path = tmp_path / "desktop_test.png"
     res_shot = comp.execute({"action": "screenshot", "path": str(shot_path)})
     assert res_shot.success is True
-    verif_shot = comp.verify({"action": "screenshot"}, res_shot)
+    verif_shot = default_verifier.verify("computer", {"action": "screenshot", "path": str(shot_path)}, res_shot)
     assert verif_shot.passed is True
     assert shot_path.exists()

@@ -22,7 +22,7 @@ from agent.exceptions import (
 )
 from agent.logger import get_task_logger, init_logger
 from agent.main import cmd_task, main
-from agent.tools.base import Tool, ToolResult, VerificationResult
+from agent.tools.base import Tool, ToolResult
 from agent.tools.registry import ToolRegistry, registry
 
 
