@@ -24,7 +24,7 @@ BLOCKED_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bClear-Disk\b", re.IGNORECASE),
     re.compile(r"\bInitialize-Disk\b", re.IGNORECASE),
     re.compile(r"\bdiskpart\b", re.IGNORECASE),
-    re.compile(r"\bdel\s+/[fsq]+\s+[a-z]:\\", re.IGNORECASE),
+    re.compile(r"\bdel(\s+/[a-z]+)+\s+[a-z]:", re.IGNORECASE),
     re.compile(r"\bRemove-Item\b.*-Recurse.*-Force.*[a-z]:\\(Windows|System32|Users)", re.IGNORECASE),
     re.compile(r"\brm\s+-rf\s+/[a-z]*", re.IGNORECASE),
     re.compile(r"\b(vssadmin|bcdedit|wbadmin|wevtutil)\b", re.IGNORECASE),
@@ -107,6 +107,17 @@ class SecurityEvaluation(BaseModel):
     sanitized_arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
+# Prompt injection patterns for untrusted webpage and external data
+PROMPT_INJECTION_PATTERNS: List[re.Pattern] = [
+    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
+    re.compile(r"(system\s+prompt|reveal\s+prompt|show\s+prompt)", re.IGNORECASE),
+    re.compile(r"(disable|bypass|override)\s+(security|checks|policy)", re.IGNORECASE),
+    re.compile(r"run\s+this\s+(command|script|shell)", re.IGNORECASE),
+    re.compile(r"send\s+(credentials|password|token|secret|api[\s_-]?key)", re.IGNORECASE),
+    re.compile(r"new\s+system\s+directive", re.IGNORECASE),
+]
+
+
 class SecurityPolicy:
     """Central deterministic policy engine enforcing boundaries outside the LLM."""
 
@@ -115,6 +126,7 @@ class SecurityPolicy:
         allowed_roots: Optional[List[Path]] = None,
         require_approval_for_unknown_tools: bool = True,
         block_ssrf: bool = True,
+        allow_loopback: bool = False,
     ) -> None:
         settings = get_settings()
         self.allowed_roots = allowed_roots or [
@@ -124,6 +136,15 @@ class SecurityPolicy:
         ]
         self.require_approval_for_unknown_tools = require_approval_for_unknown_tools
         self.block_ssrf = block_ssrf
+        self.allow_loopback = allow_loopback
+
+    def check_prompt_injection(self, text: str) -> Tuple[bool, List[str]]:
+        """Scan untrusted webpage or external text for prompt injection patterns."""
+        findings = []
+        for pattern in PROMPT_INJECTION_PATTERNS:
+            if pattern.search(text):
+                findings.append(pattern.pattern)
+        return (len(findings) > 0, findings)
 
     def _is_private_or_loopback_host(self, hostname: str) -> bool:
         """Check whether a host resolves to loopback, link-local, or private RFC 1918 range (SSRF guard)."""
@@ -155,8 +176,13 @@ class SecurityPolicy:
         if not url or not url.strip():
             return False, "URL cannot be empty."
 
-        parsed = urllib.parse.urlparse(url.strip())
+        clean_url = url.strip()
+        parsed = urllib.parse.urlparse(clean_url)
         scheme = parsed.scheme.lower()
+
+        # Prohibit dangerous pseudo-schemes and script injection
+        if scheme in ("javascript", "data", "vbscript") or "javascript:" in clean_url.lower():
+            return False, f"Prohibited dangerous URL scheme '{scheme}'."
 
         # Check file:// scheme: only allowed for safe local files (e.g. test pages, workspace artifacts)
         if scheme == "file":
@@ -169,7 +195,6 @@ class SecurityPolicy:
             except Exception as e:
                 return False, f"Invalid local file URL: {e}"
 
-        # Prohibit dangerous pseudo-schemes
         if scheme not in ("http", "https"):
             return False, f"Prohibited URL scheme '{scheme}'. Only http, https, and safe local files are allowed."
 
@@ -178,6 +203,8 @@ class SecurityPolicy:
             return False, "Invalid URL: missing hostname."
 
         if self.block_ssrf and self._is_private_or_loopback_host(hostname):
+            if self.allow_loopback and hostname.lower() in ("localhost", "127.0.0.1", "::1"):
+                return True, "Loopback URL allowed by configuration."
             return (
                 False,
                 f"Access to private/local/metadata network address '{hostname}' is blocked (SSRF prevention).",
@@ -274,10 +301,53 @@ class SecurityPolicy:
                 computed_level = perm_level
                 reason = f"Command classified as {perm_level.value}: '{command}'"
 
-        # 4. BROWSER TOOL EVALUATION
+        # 4. APPLICATION TOOL EVALUATION
+        elif tool_name == "application":
+            action = str(sanitized_args.get("action", "")).strip()
+            command = str(sanitized_args.get("command", "")).strip()
+            pid = sanitized_args.get("pid")
+
+            if action in ("app_list", "app_verify"):
+                computed_level = PermissionLevel.SAFE
+                reason = f"Read-only application inspection: {action}"
+            elif action == "app_kill":
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"Forceful process termination requires human approval: PID {pid}"
+            elif action == "app_launch":
+                perm = classify_command_permission(command)
+                standard_apps = ("notepad", "notepad.exe", "calc", "calc.exe", "msedge", "msedge.exe", "explorer", "explorer.exe")
+                cmd_stem = Path(command.split()[0]).name.lower() if command else ""
+
+                if perm == PermissionLevel.BLOCKED:
+                    return SecurityEvaluation(
+                        level=PermissionLevel.BLOCKED,
+                        reason=f"Application launch command is permanently BLOCKED: '{command}'",
+                        is_blocked=True,
+                        requires_human=True,
+                    )
+                elif cmd_stem in standard_apps or perm in (PermissionLevel.SAFE, PermissionLevel.LOW_RISK):
+                    computed_level = PermissionLevel.LOW_RISK
+                    reason = f"Launching application: '{command}'"
+                elif perm == PermissionLevel.REQUIRES_APPROVAL:
+                    computed_level = PermissionLevel.REQUIRES_APPROVAL
+                    reason = f"Application launch requires human approval: '{command}'"
+                else:
+                    computed_level = PermissionLevel.LOW_RISK
+                    reason = f"Launching application: '{command}'"
+            elif action in ("app_focus", "app_restore", "app_minimize", "app_close"):
+                computed_level = PermissionLevel.LOW_RISK
+                reason = f"Application window lifecycle action: {action}"
+            else:
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"Unknown application action: {action}"
+
+        # 5. BROWSER TOOL EVALUATION
         elif tool_name == "browser":
             action = str(sanitized_args.get("action", "")).strip()
             url = str(sanitized_args.get("url", "")).strip()
+            selector = str(sanitized_args.get("selector", "")).lower()
+            target_text = str(sanitized_args.get("target_text", "")).lower()
+            path_arg = str(sanitized_args.get("path", "")).strip()
 
             if url:
                 valid_url, url_reason = self.evaluate_url_safety(url)
@@ -289,15 +359,56 @@ class SecurityPolicy:
                         requires_human=True,
                     )
 
-            if action in ("click", "type", "select"):
-                computed_level = PermissionLevel.LOW_RISK
-                reason = f"Interactive browser action: {action}"
-            elif action in ("navigate", "inspect_page", "extract_text", "screenshot"):
+            # Sensitive target detection
+            sensitive_triggers = ["password", "credit_card", "cvv", "bank", "ssn", "secret_key", "api_token"]
+            is_credential_target = any(trig in selector or trig in target_text for trig in sensitive_triggers)
+            financial_triggers = ["purchase", "pay now", "confirm payment", "transfer money", "delete account"]
+            is_financial_target = any(trig in target_text or trig in selector for trig in financial_triggers)
+
+            if action == "upload":
+                # File upload to web always requires human approval
+                if path_arg:
+                    try:
+                        validate_path_safety(path_arg, allowed_roots=None)
+                    except Exception as e:
+                        return SecurityEvaluation(
+                            level=PermissionLevel.BLOCKED,
+                            reason=f"Browser file upload blocked by path policy: {e}",
+                            is_blocked=True,
+                            requires_human=True,
+                        )
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"File upload to web application requires human approval: '{path_arg}'"
+
+            elif action == "download":
+                # Executable downloads require human approval
+                executable_extensions = (".exe", ".bat", ".cmd", ".ps1", ".vbs", ".dll", ".msi", ".scr")
+                if any(path_arg.lower().endswith(ext) for ext in executable_extensions):
+                    computed_level = PermissionLevel.REQUIRES_APPROVAL
+                    reason = f"Downloading executable file '{path_arg}' requires human approval."
+                else:
+                    computed_level = PermissionLevel.LOW_RISK
+                    reason = "Browser download operation."
+
+            elif is_credential_target:
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"Interacting with credential/password field requires human approval: {selector or target_text}"
+
+            elif is_financial_target:
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"Financial or destructive web action requires human approval: {target_text or selector}"
+
+            elif action in ("observe", "inspect_page", "extract_text", "read_page", "list_tabs", "screenshot"):
                 computed_level = PermissionLevel.SAFE
                 reason = f"Read-only browser action: {action}"
-            else:
+
+            elif action in ("navigate", "click", "type", "select", "scroll", "back", "forward", "refresh", "tab_switch", "new_tab", "close_tab", "launch", "close"):
                 computed_level = PermissionLevel.LOW_RISK
-                reason = f"Browser action: {action}"
+                reason = f"Standard browser action: {action}"
+
+            else:
+                computed_level = PermissionLevel.REQUIRES_APPROVAL
+                reason = f"Browser action requires approval: {action}"
 
         # 5. COMPUTER TOOL EVALUATION
         elif tool_name == "computer":

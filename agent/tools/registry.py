@@ -121,3 +121,9 @@ registry.register(FilesystemTool())
 registry.register(TerminalTool())
 registry.register(BrowserTool())
 registry.register(ComputerTool())
+
+# Phase 5 Application Control Tool
+from agent.tools.application import ApplicationTool
+
+registry.register(ApplicationTool())
+

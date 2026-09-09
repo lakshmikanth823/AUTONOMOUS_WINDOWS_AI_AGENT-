@@ -538,9 +538,26 @@ class ComputerTool(Tool):
 
             # 12. WINDOW FOCUS
             elif action == "window_focus":
+                target_hwnd_arg = args.get("hwnd")
+                if target_hwnd_arg is not None:
+                    try:
+                        thwnd = int(target_hwnd_arg)
+                        if self.user32.IsWindow(thwnd):
+                            self._bring_window_to_foreground(thwnd)
+                            # Get title of this window
+                            l = self.user32.GetWindowTextLengthW(thwnd)
+                            buf = ctypes.create_unicode_buffer(l + 1)
+                            self.user32.GetWindowTextW(thwnd, buf, l + 1)
+                            return ToolResult(
+                                success=True,
+                                output={"focused": True, "title": buf.value, "hwnd": thwnd},
+                            )
+                    except Exception:
+                        pass
+
                 query = text.strip()
                 if not query:
-                    return ToolResult(success=False, error="Parameter 'text' (window title query) is required.")
+                    return ToolResult(success=False, error="Parameter 'text' (window title query) or 'hwnd' is required.")
 
                 query_lower = query.lower()
                 timeout = 3.0

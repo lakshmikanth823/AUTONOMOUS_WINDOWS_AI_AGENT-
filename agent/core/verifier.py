@@ -71,6 +71,10 @@ class Verifier:
         elif tool_name == "terminal":
             return self._verify_terminal(arguments, tool_result, expected)
 
+        # Domain: Application
+        elif tool_name == "application":
+            return self._verify_application(action_name, arguments, tool_result, expected)
+
         # Domain: Browser
         elif tool_name == "browser":
             return self._verify_browser(action_name, arguments, tool_result, expected)
@@ -244,6 +248,139 @@ class Verifier:
             status=VerificationStatus.VERIFIED,
         )
 
+    def _verify_application(
+        self,
+        action: str,
+        args: Dict[str, Any],
+        result: ToolResult,
+        expected: str,
+    ) -> VerificationRecord:
+        out = result.output or {}
+        if not isinstance(out, dict):
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Application output format unexpected.",
+                status=VerificationStatus.FAILED if not result.success else VerificationStatus.VERIFIED,
+            )
+
+        if action == "app_launch":
+            pid = out.get("pid")
+            hwnd = out.get("hwnd")
+            if not pid or pid <= 0:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Application launch verification failed: No valid PID returned.",
+                    status=VerificationStatus.FAILED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Application launched and verified running (PID: {pid}, HWND: {hwnd}).",
+                status=VerificationStatus.VERIFIED,
+            )
+
+        elif action == "app_close":
+            status_val = out.get("status")
+            if status_val == "exited":
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Application closed and process/window verified terminated.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Application failed to terminate (status: {status_val}).",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "app_focus":
+            is_fg = out.get("is_foreground", False)
+            if is_fg:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Application window {out.get('hwnd')} verified as foreground window.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Application window could not be verified in foreground.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "app_minimize":
+            is_min = out.get("is_minimized", False)
+            if is_min:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Application window {out.get('hwnd')} verified minimized.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Window minimize verification failed.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "app_restore":
+            is_min = out.get("is_minimized", True)
+            if not is_min:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Application window {out.get('hwnd')} verified restored from minimized.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Window restore verification failed.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "app_kill":
+            if out.get("status") == "terminated":
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Process PID {out.get('pid')} verified terminated.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Process kill failed.",
+                status=VerificationStatus.FAILED,
+            )
+
+        return VerificationRecord(
+            action=action,
+            expected_result=expected,
+            observation=out,
+            verification="Application action completed successfully.",
+            status=VerificationStatus.VERIFIED,
+        )
+
     def _verify_browser(
         self,
         action: str,
@@ -252,8 +389,17 @@ class Verifier:
         expected: str,
     ) -> VerificationRecord:
         out = result.output
+        if not isinstance(out, dict):
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Browser action returned non-dictionary output.",
+                status=VerificationStatus.VERIFIED if result.success else VerificationStatus.FAILED,
+            )
+
         if action == "screenshot":
-            if isinstance(out, dict) and "screenshot_path" in out:
+            if "screenshot_path" in out:
                 p = Path(out["screenshot_path"])
                 if p.exists() and p.stat().st_size > 0:
                     return VerificationRecord(
@@ -271,23 +417,34 @@ class Verifier:
                 status=VerificationStatus.FAILED,
             )
 
-        elif action in ("navigate", "inspect_page"):
-            if isinstance(out, dict) and out.get("title"):
+        elif action in ("navigate", "inspect_page", "launch"):
+            url = out.get("url", "")
+            title = out.get("title", "")
+            status_code = out.get("status_code", 200)
+            if status_code >= 400:
                 return VerificationRecord(
                     action=action,
                     expected_result=expected,
                     observation=out,
-                    verification=f"Browser loaded page title: '{out.get('title')}'.",
-                    status=VerificationStatus.VERIFIED,
+                    verification=f"Browser navigation received HTTP error status: {status_code}.",
+                    status=VerificationStatus.FAILED,
                 )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Browser loaded page: '{title}' at {url} (status: {status_code}).",
+                status=VerificationStatus.VERIFIED,
+            )
 
-        elif action == "extract_text":
-            if isinstance(out, dict) and out.get("length", 0) > 0:
+        elif action in ("extract_text", "read_page"):
+            length = out.get("length", 0)
+            if length > 0:
                 return VerificationRecord(
                     action=action,
                     expected_result=expected,
                     observation=out,
-                    verification=f"Successfully extracted {out.get('length')} characters of text.",
+                    verification=f"Successfully extracted {length} characters of page text.",
                     status=VerificationStatus.VERIFIED,
                 )
             return VerificationRecord(
@@ -296,6 +453,83 @@ class Verifier:
                 observation=out,
                 verification="No text extracted from target page or selector.",
                 status=VerificationStatus.FAILED,
+            )
+
+        elif action == "type":
+            val = out.get("value_set", "")
+            expected_text = args.get("text", "")
+            if val == expected_text or expected_text in val:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Input field verified set to expected value: '{val}'.",
+                    status=VerificationStatus.VERIFIED,
+                )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Input field verification failed: expected '{expected_text}', found '{val}'.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "click":
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Click executed. Resulting page: '{out.get('title')}' ({out.get('current_url')}).",
+                status=VerificationStatus.VERIFIED,
+            )
+
+        elif action == "select":
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Dropdown selection verified: '{out.get('selected_value')}'.",
+                status=VerificationStatus.VERIFIED,
+            )
+
+        elif action == "download":
+            file_path = out.get("file_path", "")
+            if file_path:
+                p = Path(file_path)
+                if p.exists() and p.stat().st_size > 0:
+                    return VerificationRecord(
+                        action=action,
+                        expected_result=expected,
+                        observation=out,
+                        verification=f"Downloaded file verified on disk: '{p.name}' ({p.stat().st_size} bytes).",
+                        status=VerificationStatus.VERIFIED,
+                    )
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification="Download verification failed: file does not exist on disk or is 0 bytes.",
+                status=VerificationStatus.FAILED,
+            )
+
+        elif action == "upload":
+            file_name = out.get("file_name", "")
+            size = out.get("size_bytes", 0)
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Uploaded file verified: '{file_name}' ({size} bytes).",
+                status=VerificationStatus.VERIFIED,
+            )
+
+        elif action == "tab_switch":
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Tab switch verified. Active tab {out.get('tab_id')}: '{out.get('title')}'.",
+                status=VerificationStatus.VERIFIED,
             )
 
         return VerificationRecord(
@@ -1039,6 +1273,22 @@ class Verifier:
 
         obs = last_observation or {}
         obs_texts: List[str] = []
+        if isinstance(obs, dict):
+            if "url" in obs:
+                obs_texts.append(str(obs["url"]))
+            if "title" in obs:
+                obs_texts.append(str(obs["title"]))
+            if "visible_text_preview" in obs:
+                obs_texts.append(str(obs["visible_text_preview"]))
+            for el in obs.get("interactive_elements", []):
+                if isinstance(el, dict):
+                    obs_texts.append(str(el.get("text", "")))
+                    obs_texts.append(str(el.get("name", "")))
+                    obs_texts.append(str(el.get("id", "")))
+            for app in obs.get("applications", []):
+                if isinstance(app, dict):
+                    obs_texts.append(str(app.get("title", "")))
+
         for t in obs.get("targets", []):
             if isinstance(t, dict):
                 obs_texts.append(str(t.get("name", "")))
@@ -1056,6 +1306,12 @@ class Verifier:
                 obs_texts.append(str(out.get("text", "")))
                 obs_texts.append(str(out.get("content", "")))
                 obs_texts.append(str(out.get("data", "")))
+                obs_texts.append(str(out.get("url", "")))
+                obs_texts.append(str(out.get("title", "")))
+                obs_texts.append(str(out.get("value_set", "")))
+                obs_texts.append(str(out.get("file_name", "")))
+                obs_texts.append(str(out.get("file_path", "")))
+                obs_texts.append(str(out.get("selected_value", "")))
 
         combined_text = " ".join(obs_texts)
 

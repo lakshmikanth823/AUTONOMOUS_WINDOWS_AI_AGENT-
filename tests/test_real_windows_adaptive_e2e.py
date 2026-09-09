@@ -122,6 +122,7 @@ class HardenedAdaptiveE2EPlanner(Planner):
                     arguments={
                         "action": "window_focus",
                         "text": self.notepad_title,
+                        "hwnd": self.real_notepad_hwnd,
                     },
                     expected_result="Notepad window focused",
                     risk_level=PermissionLevel.LOW_RISK,
@@ -173,11 +174,13 @@ def main() -> None:
         # -----------------------------------------------------------------
         print("\n--- 1. Launch Notepad Process ---")
         notepad_proc = subprocess.Popen(["notepad.exe"])
-        time.sleep(1.5)
-
-        # Focus Notepad to ensure it is in the foreground
-        focus_res = comp.execute({"action": "window_focus", "text": "Notepad"})
-        assert focus_res.success, f"Failed to focus Notepad: {focus_res.error}"
+        focus_res = None
+        for _ in range(10):
+            time.sleep(0.5)
+            focus_res = comp.execute({"action": "window_focus", "text": "Notepad"})
+            if focus_res.success:
+                break
+        assert focus_res and focus_res.success, f"Failed to focus Notepad: {focus_res.error if focus_res else 'timeout'}"
         notepad_hwnd = focus_res.output.get("hwnd")
         print(f"Notepad launched and focused with REAL valid HWND: {notepad_hwnd}")
         assert notepad_hwnd and notepad_hwnd > 0, "Expected valid Notepad HWND"
@@ -269,9 +272,6 @@ def main() -> None:
         assert active_hwnd > 0, "Expected a valid active window HWND"
         print("Distinction confirmed: Target is STALE BUT PREVIOUSLY VALID (Notepad HWND), not an invalid dummy.")
 
-        # -----------------------------------------------------------------
-        # 5. Execute Autonomous Adaptive Loop with Stale Target & Positive Approval
-        # -----------------------------------------------------------------
         print("\n--- 5. Run Autonomous Adaptive Loop ---")
         reg_main = ToolRegistry()
         reg_main.register(comp)
