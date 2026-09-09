@@ -15,7 +15,10 @@ from agent.core.state import (
     StepResult,
     Subtask,
     Task,
+    TaskExecutionReport,
+    TaskLimits,
     TaskPlan,
+    TaskStateEnum,
     TaskStatus,
 )
 from agent.core.verifier import (
@@ -28,6 +31,9 @@ from agent.core.verifier import (
 __all__ = [
     "Agent",
     "TaskState",
+    "TaskStateEnum",
+    "TaskLimits",
+    "TaskExecutionReport",
     "Planner",
     "Plan",
     "PlanStep",
