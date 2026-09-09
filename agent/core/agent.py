@@ -116,6 +116,9 @@ class Agent:
         escalation_callback: Optional[Callable[[str, PlanStep], bool]] = None,
         memory_manager: Optional[Any] = None,
         limits: Optional[TaskLimits] = None,
+        security_policy: Optional[Any] = None,
+        audit_logger: Optional[Any] = None,
+        rate_limiter: Optional[Any] = None,
     ) -> None:
         self.planner = planner
         self.registry = tool_registry or default_registry
@@ -132,6 +135,14 @@ class Agent:
             max_retries_per_step=self.settings.max_retry_attempts,
             max_execution_time_seconds=float(self.settings.command_timeout_seconds * 5),
         )
+        from agent.security.audit import audit_logger as default_audit_logger
+        from agent.security.policy import default_security_policy
+        from agent.security.rate_limiter import RateLimiter
+
+        self.security_policy = security_policy or default_security_policy
+        self.audit_logger = audit_logger or default_audit_logger
+        self.rate_limiter = rate_limiter or RateLimiter(max_per_minute=300, max_per_second=50)
+
         self._current_state: Optional[TaskState] = None
         self._is_paused: bool = False
         self._is_cancelled: bool = False
@@ -308,15 +319,56 @@ class Agent:
                 state.status = TaskStateEnum.FAILED
                 break
 
-            # RISK ANALYSIS & APPROVAL
-            if step.risk_level == PermissionLevel.BLOCKED:
+            # 1. Emergency stop check
+            from agent.security.emergency import emergency_stop
+            if emergency_stop.is_triggered:
+                err_msg = f"Task aborted: emergency stop is active ({emergency_stop.reason})"
+                state.errors.append(err_msg)
+                state.remaining_issues.append(err_msg)
+                state.status = TaskStateEnum.CANCELLED
+                logger.critical(err_msg)
+                break
+
+            # 2. Rate limit check
+            if not self.rate_limiter.check_and_consume():
+                err_msg = "Execution velocity exceeded configured rate limits."
+                state.errors.append(err_msg)
+                state.remaining_issues.append(err_msg)
+                state.status = TaskStateEnum.FAILED
+                logger.error(err_msg)
+                break
+
+            # 3. DETERMINISTIC RISK ANALYSIS & SECURITY POLICY (OUTSIDE THE LLM)
+            known_tools = {t.name for t in self.registry.list_tools()}
+            sec_eval = self.security_policy.evaluate_action(
+                tool_name=step.tool_required,
+                arguments=step.arguments,
+                known_tool_names=known_tools,
+                llm_requested_level=step.risk_level,
+            )
+
+            # Deterministic policy strictly overrides LLM self-classification
+            step.risk_level = sec_eval.level
+            effective_args = sec_eval.sanitized_arguments
+
+            if sec_eval.is_blocked:
                 err_msg = f"Step '{step.step_id}' is permanently BLOCKED by security policy."
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
                 state.status = TaskStateEnum.FAILED
+                self.audit_logger.log_action(
+                    task_id=state.task_id,
+                    action_id=f"act_blocked_{step.step_id}",
+                    tool_name=step.tool_required,
+                    arguments=step.arguments,
+                    permission_level=sec_eval.level.value,
+                    approved=False,
+                    success=False,
+                    error=sec_eval.reason,
+                )
                 break
 
-            requires_human = not can_auto_execute(
+            requires_human = sec_eval.requires_human or not can_auto_execute(
                 step.risk_level,
                 self.settings.auto_approve_max_level,
                 self.settings.require_human_approval,
@@ -325,7 +377,7 @@ class Agent:
             if requires_human:
                 state.status = TaskStateEnum.WAITING_FOR_APPROVAL
                 state.mark_updated()
-                logger.info(f"FSM State [WAITING_FOR_APPROVAL] for step {step.step_id}")
+                logger.info(f"FSM State [WAITING_FOR_APPROVAL] for step {step.step_id}: {sec_eval.reason}")
 
                 approved = False
                 if self.approval_callback:
@@ -336,6 +388,7 @@ class Agent:
                     "action": step.tool_required,
                     "risk_level": step.risk_level.value,
                     "approved": approved,
+                    "reason": sec_eval.reason,
                 })
 
                 if not approved:
@@ -343,12 +396,21 @@ class Agent:
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
                     state.status = TaskStateEnum.FAILED
+                    self.audit_logger.log_action(
+                        task_id=state.task_id,
+                        action_id=f"act_rejected_{step.step_id}",
+                        tool_name=step.tool_required,
+                        arguments=step.arguments,
+                        permission_level=sec_eval.level.value,
+                        approved=False,
+                        success=False,
+                        error="Human approval rejected",
+                    )
                     break
 
             # EXECUTION & VERIFICATION & RECOVERY
             step_success = False
             retries = 0
-            effective_args = dict(step.arguments)
 
             while retries <= self.limits.max_retries_per_step and not step_success:
                 # 4. EXECUTION
@@ -407,6 +469,17 @@ class Agent:
                     verification_details=verif_record.verification,
                 )
                 state.actions.append(action_record)
+
+                self.audit_logger.log_action(
+                    task_id=state.task_id,
+                    action_id=action_id,
+                    tool_name=step.tool_required,
+                    arguments=effective_args,
+                    permission_level=step.risk_level.value,
+                    approved=True if requires_human else None,
+                    success=is_verified,
+                    error=tool_result.error if not is_verified else None,
+                )
 
                 if is_verified:
                     step_success = True

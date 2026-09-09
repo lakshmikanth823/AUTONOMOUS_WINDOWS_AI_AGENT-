@@ -105,6 +105,7 @@ def test_autonomous_agent_end_to_end_workflow(tmp_path: Path):
         planner=planner,
         tool_registry=global_registry,
         memory_manager=mem_mgr,
+        approval_callback=lambda step: True,
     )
 
     state = agent.run("Create a Python project containing a program that prints Hello World, run it, verify output, and report completion.")

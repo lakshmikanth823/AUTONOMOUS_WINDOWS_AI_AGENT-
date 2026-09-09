@@ -57,29 +57,50 @@ class PythonRunnerTool(Tool):
             tmp_path = Path(tmp.name)
 
         start_time = time.perf_counter()
+
+        from agent.security.emergency import emergency_stop
+        from agent.security.sanitizer import scrub_subprocess_environment, truncate_tool_output
+
+        if emergency_stop.is_triggered:
+            return ToolResult(
+                success=False,
+                error=f"Execution blocked: emergency stop is active ({emergency_stop.reason}).",
+            )
+
+        clean_env = scrub_subprocess_environment()
+
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 [python_exe, str(tmp_path)],
                 cwd=str(settings.workspace_root),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 encoding="utf-8",
                 errors="replace",
+                env=clean_env,
             )
+            emergency_stop.register_pid(process.pid)
+
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            finally:
+                emergency_stop.unregister_pid(process.pid)
+
             duration = round(time.perf_counter() - start_time, 3)
+            stdout_clean, _ = truncate_tool_output(stdout)
+            stderr_clean, _ = truncate_tool_output(stderr)
 
             success = process.returncode == 0
             return ToolResult(
                 success=success,
                 output={
-                    "stdout": process.stdout,
-                    "stderr": process.stderr,
+                    "stdout": stdout_clean,
+                    "stderr": stderr_clean,
                     "exit_code": process.returncode,
                     "duration_seconds": duration,
                 },
-                error=process.stderr.strip() if not success else None,
+                error=stderr_clean.strip() if not success else None,
             )
 
         except subprocess.TimeoutExpired:

@@ -47,7 +47,7 @@ class PermissionLevel(str, Enum):
         return self.severity < other.severity
 
 
-# Patterns for permanently blocked (unauthorized destructive) commands
+# Patterns for permanently blocked (unauthorized destructive or obfuscated) commands
 BLOCKED_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bformat\b(\.com)?\s+[a-z]:", re.IGNORECASE),
     re.compile(r"\bFormat-Volume\b", re.IGNORECASE),
@@ -57,6 +57,11 @@ BLOCKED_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bdel\s+/[fsq]+\s+[a-z]:\\", re.IGNORECASE),
     re.compile(r"\bRemove-Item\b.*-Recurse.*-Force.*[a-z]:\\(Windows|System32|Users)", re.IGNORECASE),
     re.compile(r"\brm\s+-rf\s+/[a-z]*", re.IGNORECASE),
+    re.compile(r"\b(vssadmin|bcdedit|wbadmin|wevtutil)\b", re.IGNORECASE),
+    re.compile(r"-(enc|encodedcommand)\b", re.IGNORECASE),
+    re.compile(r"\b(Invoke-Expression|iex)\b", re.IGNORECASE),
+    re.compile(r"\[Convert\]::FromBase64String", re.IGNORECASE),
+    re.compile(r"\bStart-Process\b.*-Verb\s+RunAs", re.IGNORECASE),
 ]
 
 # Patterns for operations requiring human-in-the-loop approval
@@ -66,7 +71,7 @@ REQUIRES_APPROVAL_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bStop-Computer\b", re.IGNORECASE),
     re.compile(r"\bRestart-Computer\b", re.IGNORECASE),
     re.compile(r"\bshutdown\b", re.IGNORECASE),
-    re.compile(r"\breg\s+delete\b", re.IGNORECASE),
+    re.compile(r"\breg\s+(delete|add)\b", re.IGNORECASE),
     re.compile(r"\bRemove-ItemProperty\b.*HKLM:", re.IGNORECASE),
     re.compile(r"\bSet-ExecutionPolicy\b\s+(Unrestricted|Bypass)", re.IGNORECASE),
     re.compile(r"\bnet\s+user\b", re.IGNORECASE),
@@ -76,6 +81,9 @@ REQUIRES_APPROVAL_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bgit\s+reset\b\s+--hard", re.IGNORECASE),
     re.compile(r"\bpip\s+install\b", re.IGNORECASE),
     re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
+    re.compile(r"\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|certutil|bitsadmin)\b", re.IGNORECASE),
+    re.compile(r"\b(ssh|scp|sftp|ftp|tftp|ncat|nc|Test-NetConnection)\b", re.IGNORECASE),
+    re.compile(r"\b(Get-ChildItem\s+env:|dir\s+env:)\b", re.IGNORECASE),
 ]
 
 
@@ -93,6 +101,11 @@ def classify_command_permission(command: str) -> PermissionLevel:
         if pattern.search(cmd_clean):
             return PermissionLevel.REQUIRES_APPROVAL
 
+    # Detect dangerous command chaining / subshells
+    chaining_tokens = [";", "&&", "||", "&", "\n", "`"]
+    if any(token in cmd_clean for token in chaining_tokens) or "$(" in cmd_clean:
+        return PermissionLevel.REQUIRES_APPROVAL
+
     # Safe read-only inspection commands
     safe_prefixes = (
         "Get-", "dir", "ls", "pwd", "cd ", "echo ", "Write-Host", "cat ",
@@ -102,8 +115,16 @@ def classify_command_permission(command: str) -> PermissionLevel:
     if any(cmd_clean.startswith(prefix) for prefix in safe_prefixes):
         return PermissionLevel.SAFE
 
-    # Default command execution is classified as LOW_RISK
-    return PermissionLevel.LOW_RISK
+    # Known standard low-risk development tools
+    low_risk_prefixes = (
+        "python ", "pytest", "node ", "git add", "git commit", "git checkout",
+        "git branch", "git merge", "npm test"
+    )
+    if any(cmd_clean.startswith(prefix) for prefix in low_risk_prefixes):
+        return PermissionLevel.LOW_RISK
+
+    # Default policy: DENY unknown capabilities / require human approval
+    return PermissionLevel.REQUIRES_APPROVAL
 
 
 def can_auto_execute(

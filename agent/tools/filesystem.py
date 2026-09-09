@@ -55,17 +55,9 @@ class FilesystemTool(Tool):
     ]
 
     def _resolve_safe_path(self, raw_path: str, allow_outside_workspace: bool = False) -> Path:
-        """Resolve path and verify boundary protection."""
-        settings = get_settings()
-        resolved = Path(raw_path).resolve()
-        path_str = str(resolved).lower()
-
-        # Hard block critical Windows system roots
-        for critical in self.CRITICAL_SYSTEM_DIRS:
-            if path_str == critical or path_str.startswith(critical + "\\"):
-                raise PermissionError(f"Access to protected system path '{resolved}' is blocked.")
-
-        return resolved
+        """Resolve path and verify boundary protection, ADS, device names, and critical paths."""
+        from agent.security.sanitizer import validate_path_safety
+        return validate_path_safety(raw_path)
 
     def get_action_permission(self, action: str, path: str, overwrite: bool = False) -> PermissionLevel:
         """Dynamically evaluate permission level based on the specific action and path."""
@@ -119,9 +111,12 @@ class FilesystemTool(Tool):
                     return ToolResult(success=False, error=f"File '{target_path}' does not exist.")
                 if not target_path.is_file():
                     return ToolResult(success=False, error=f"Path '{target_path}' is not a regular file.")
+                from agent.security.sanitizer import truncate_tool_output
+                max_bytes = 5 * 1024 * 1024  # 5 MB limit
                 with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                    file_text = f.read()
-                return ToolResult(success=True, output=file_text)
+                    file_text = f.read(max_bytes + 1)
+                truncated_text, _ = truncate_tool_output(file_text, max_bytes=max_bytes)
+                return ToolResult(success=True, output=truncated_text)
 
             elif action == "create_directory":
                 target_path.mkdir(parents=True, exist_ok=True)

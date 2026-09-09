@@ -66,6 +66,15 @@ class BrowserTool(Tool):
 
         settings = get_settings()
 
+        if url:
+            from agent.security.policy import default_security_policy
+            valid_url, reason = default_security_policy.evaluate_url_safety(url)
+            if not valid_url:
+                return ToolResult(
+                    success=False,
+                    error=f"Browser navigation blocked by security policy: {reason}",
+                )
+
         try:
             with sync_playwright() as p:
                 browser = self._launch_browser(p)

@@ -64,6 +64,17 @@ class TerminalTool(Tool):
         start_time_iso = datetime.now(timezone.utc).isoformat()
         start_time_perf = time.perf_counter()
 
+        from agent.security.emergency import emergency_stop
+        from agent.security.sanitizer import scrub_subprocess_environment, truncate_tool_output
+
+        if emergency_stop.is_triggered:
+            return ToolResult(
+                success=False,
+                error=f"Execution blocked: emergency stop is active ({emergency_stop.reason}).",
+            )
+
+        clean_env = scrub_subprocess_environment()
+
         # Execute via powershell.exe
         ps_command = [
             "powershell.exe",
@@ -76,17 +87,26 @@ class TerminalTool(Tool):
         ]
 
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 ps_command,
                 cwd=str(cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_seconds,
                 encoding="utf-8",
                 errors="replace",
+                env=clean_env,
             )
+            emergency_stop.register_pid(process.pid)
+
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            finally:
+                emergency_stop.unregister_pid(process.pid)
+
             duration = round(time.perf_counter() - start_time_perf, 3)
+            stdout_clean, _ = truncate_tool_output(stdout)
+            stderr_clean, _ = truncate_tool_output(stderr)
 
             output_record = {
                 "command": command,
@@ -94,12 +114,12 @@ class TerminalTool(Tool):
                 "start_time": start_time_iso,
                 "duration_seconds": duration,
                 "exit_code": process.returncode,
-                "stdout": process.stdout,
-                "stderr": process.stderr,
+                "stdout": stdout_clean,
+                "stderr": stderr_clean,
             }
 
             success = process.returncode == 0
-            err_msg = process.stderr.strip() if not success else None
+            err_msg = stderr_clean.strip() if not success else None
 
             return ToolResult(
                 success=success,
