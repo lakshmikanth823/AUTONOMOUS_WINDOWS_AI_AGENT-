@@ -1,0 +1,14 @@
+{
+  "invoice_ORD-101.json": {
+    "sha256": "57d694d5d1ac3420900a4e76cc1f5413623f72107815df38aa6c512e1f8fd1b0",
+    "bytes": 649
+  },
+  "invoice_ORD-102.json": {
+    "sha256": "02468c7d2c63e5f38f4d3a73e4bf76a517627947f41d03525f9c1530610caacb",
+    "bytes": 640
+  },
+  "invoice_ORD-103.json": {
+    "sha256": "85721dfcf24c20ca8a7767c0a8690d6f0825586a4218bc3e614949cf6bfb2d26",
+    "bytes": 521
+  }
+}

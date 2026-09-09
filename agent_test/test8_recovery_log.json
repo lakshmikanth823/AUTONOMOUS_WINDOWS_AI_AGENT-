@@ -1,0 +1,26 @@
+[
+  {
+    "scenario": "1. Missing Prerequisite File",
+    "initial_error": "File 'E:\\AI_\\agent_test\\test8_missing_config.json' does not exist.",
+    "category": "tool_failure",
+    "autofix": "Generated missing prerequisite file",
+    "retried_success": true,
+    "verified": true
+  },
+  {
+    "scenario": "2. Python Logic Failure & Autofix",
+    "diagnosed_errors": [
+      "ZeroDivisionError",
+      "TypeError"
+    ],
+    "autofix_applied": true,
+    "retest_passed": true
+  },
+  {
+    "scenario": "3. Malformed Tool Arguments",
+    "initial_error": "Unknown filesystem action: 'invalid_operation_xyz'",
+    "category": "tool_failure",
+    "schema_corrected": true,
+    "verified": true
+  }
+]

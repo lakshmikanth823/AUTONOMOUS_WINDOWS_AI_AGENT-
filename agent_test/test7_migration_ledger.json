@@ -1,0 +1,285 @@
+{
+  "records": [
+    {
+      "id": "REC-001",
+      "source_system": "LegacyDB",
+      "val": 17.5,
+      "hash": "7f9b3ede0d680280daeabf0c8ffdfe55",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-002",
+      "source_system": "LegacyDB",
+      "val": 35.0,
+      "hash": "6849cc985d60a40eaed025badfc7efc2",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-003",
+      "source_system": "LegacyDB",
+      "val": 52.5,
+      "hash": "e3aa8e14aa9c5339e82f30dae35c8bcd",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-004",
+      "source_system": "LegacyDB",
+      "val": 70.0,
+      "hash": "f834fd97022a7e3b8053c30f4fd9011c",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-005",
+      "source_system": "LegacyDB",
+      "val": 87.5,
+      "hash": "b99be8db4bcac7eda3230f30b24856f2",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-006",
+      "source_system": "LegacyDB",
+      "val": 105.0,
+      "hash": "8330481c6331cf164ea35311c0ef1a6a",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-007",
+      "source_system": "LegacyDB",
+      "val": 122.5,
+      "hash": "3c8f10b0831344a22f7e6cbb1e432f49",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-008",
+      "source_system": "LegacyDB",
+      "val": 140.0,
+      "hash": "cb530eb809ad56e8c66fc37aaabd4e55",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-009",
+      "source_system": "LegacyDB",
+      "val": 157.5,
+      "hash": "495095abe736d7e846c1c47e0cfb8921",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-010",
+      "source_system": "LegacyDB",
+      "val": 175.0,
+      "hash": "a343ad191a2636c1147d274b6a818750",
+      "migrated": true,
+      "phase": 1,
+      "migrated_at": 1788938179.7680354
+    },
+    {
+      "id": "REC-011",
+      "source_system": "LegacyDB",
+      "val": 192.5,
+      "hash": "7389a4024435668c8154399ab5af67c6",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-012",
+      "source_system": "LegacyDB",
+      "val": 210.0,
+      "hash": "605243156636a95599f20a23bef57da7",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-013",
+      "source_system": "LegacyDB",
+      "val": 227.5,
+      "hash": "dd4715cf486b893a66cfc1779eebbb73",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-014",
+      "source_system": "LegacyDB",
+      "val": 245.0,
+      "hash": "36c5cfaa67a8911717d7ff8b082f080e",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-015",
+      "source_system": "LegacyDB",
+      "val": 262.5,
+      "hash": "a28ca6f103cd346e38f842c8e2104a81",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-016",
+      "source_system": "LegacyDB",
+      "val": 280.0,
+      "hash": "aa60274d4fdf1fe2b33a85323ff5db94",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-017",
+      "source_system": "LegacyDB",
+      "val": 297.5,
+      "hash": "290aa3f6a20cedce6d559937316a7656",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-018",
+      "source_system": "LegacyDB",
+      "val": 315.0,
+      "hash": "6c9ceb18a12ebc90bddbfe39b6064fda",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-019",
+      "source_system": "LegacyDB",
+      "val": 332.5,
+      "hash": "470d097d9497693cdc3ed5f689fc4ec7",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-020",
+      "source_system": "LegacyDB",
+      "val": 350.0,
+      "hash": "f638985ff5c8bb4036946f177f27a09f",
+      "migrated": true,
+      "phase": 2,
+      "migrated_at": 1788938179.7760394
+    },
+    {
+      "id": "REC-021",
+      "source_system": "LegacyDB",
+      "val": 367.5,
+      "hash": "f8c063be43ba4ba9ba2355d677200314",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-022",
+      "source_system": "LegacyDB",
+      "val": 385.0,
+      "hash": "5bc941e6fe0cf0d875ae606c8c199cf0",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-023",
+      "source_system": "LegacyDB",
+      "val": 402.5,
+      "hash": "d99f7ca75ce01d4b0cbfa3dbcf7584f9",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-024",
+      "source_system": "LegacyDB",
+      "val": 420.0,
+      "hash": "3145c2069221030c5f9c87bf78eba946",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-025",
+      "source_system": "LegacyDB",
+      "val": 437.5,
+      "hash": "b1ea48f450c7ae190c86e05c0f7684dd",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-026",
+      "source_system": "LegacyDB",
+      "val": 455.0,
+      "hash": "bb764f9e596b75d465cde7130068c59d",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-027",
+      "source_system": "LegacyDB",
+      "val": 472.5,
+      "hash": "9a27d0e815ece7d8f7b1c2415cd0e57d",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-028",
+      "source_system": "LegacyDB",
+      "val": 490.0,
+      "hash": "9876d577f913b625a7e0307c79eddfb3",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-029",
+      "source_system": "LegacyDB",
+      "val": 507.5,
+      "hash": "ce47ebf0ce0762070f9265e5e6bcbd3c",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    },
+    {
+      "id": "REC-030",
+      "source_system": "LegacyDB",
+      "val": 525.0,
+      "hash": "1d3192f8a793f7e64d23c5668c480ccf",
+      "migrated": true,
+      "phase": 3,
+      "migrated_at": 1788938179.8290327
+    }
+  ],
+  "checkpoint_summary": {
+    "checkpoint_id": "CP-PHASE-FINAL",
+    "batch_range": [
+      1,
+      30
+    ],
+    "records_processed_count": 30,
+    "cumulative_value": 8137.5,
+    "checksum": "aac18c83d25619a60f2ad4790c3ef621ad471212a8fe10b8a2aef67837941181",
+    "status": "COMPLETED"
+  }
+}

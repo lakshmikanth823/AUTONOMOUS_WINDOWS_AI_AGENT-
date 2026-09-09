@@ -1,0 +1,23 @@
+{
+  "invoice_number": "INV-ORD-103",
+  "order_id": "ORD-103",
+  "customer_id": "CUST-RET-03",
+  "customer_tier": "RETAIL",
+  "payment_terms": "PREPAID",
+  "line_items": [
+    {
+      "sku": "SKU-RAM",
+      "qty": 1,
+      "unit_price": 180.0,
+      "line_subtotal": 180.0
+    }
+  ],
+  "subtotal": 180.0,
+  "discount_amount": 0.0,
+  "net_subtotal": 180.0,
+  "tax_jurisdiction": "EU-DE",
+  "tax_amount": 34.2,
+  "shipping_fee": 15.0,
+  "gross_total": 229.2,
+  "generated_at": "2026-09-09T07:16:19Z"
+}

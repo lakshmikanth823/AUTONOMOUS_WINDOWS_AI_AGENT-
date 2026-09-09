@@ -1,0 +1,75 @@
+[
+  {
+    "order_id": "ORD-101",
+    "customer_id": "CUST-ENT-01",
+    "items": [
+      {
+        "sku": "SKU-SRV",
+        "qty": 2
+      },
+      {
+        "sku": "SKU-RAM",
+        "qty": 4
+      }
+    ],
+    "jurisdiction": "US-CA",
+    "status": "CONFIRMED",
+    "weight_lbs": 35.0
+  },
+  {
+    "order_id": "ORD-102",
+    "customer_id": "CUST-VIP-02",
+    "items": [
+      {
+        "sku": "SKU-MON",
+        "qty": 3
+      },
+      {
+        "sku": "SKU-CAB",
+        "qty": 10
+      }
+    ],
+    "jurisdiction": "US-NY",
+    "status": "CONFIRMED",
+    "weight_lbs": 42.0
+  },
+  {
+    "order_id": "ORD-103",
+    "customer_id": "CUST-RET-03",
+    "items": [
+      {
+        "sku": "SKU-RAM",
+        "qty": 1
+      }
+    ],
+    "jurisdiction": "EU-DE",
+    "status": "CONFIRMED",
+    "weight_lbs": 1.5
+  },
+  {
+    "order_id": "ORD-104-VOID",
+    "customer_id": "CUST-RET-03",
+    "items": [
+      {
+        "sku": "SKU-SRV",
+        "qty": 1
+      }
+    ],
+    "jurisdiction": "US-CA",
+    "status": "VOIDED",
+    "weight_lbs": 20.0
+  },
+  {
+    "order_id": "ORD-102",
+    "customer_id": "CUST-VIP-02",
+    "items": [
+      {
+        "sku": "SKU-MON",
+        "qty": 3
+      }
+    ],
+    "jurisdiction": "US-NY",
+    "status": "CONFIRMED",
+    "weight_lbs": 42.0
+  }
+]

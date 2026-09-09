@@ -1,0 +1,17 @@
+{
+  "CUST-ENT-01": {
+    "tier": "ENTERPRISE",
+    "discount_pct": 12.0,
+    "payment_terms": "NET30"
+  },
+  "CUST-VIP-02": {
+    "tier": "VIP",
+    "discount_pct": 8.0,
+    "payment_terms": "NET15"
+  },
+  "CUST-RET-03": {
+    "tier": "RETAIL",
+    "discount_pct": 0.0,
+    "payment_terms": "PREPAID"
+  }
+}

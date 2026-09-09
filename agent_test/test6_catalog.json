@@ -1,0 +1,22 @@
+{
+  "SKU-SRV": {
+    "name": "Rackmount Server 2U",
+    "unit_price": 2500.0,
+    "active": true
+  },
+  "SKU-RAM": {
+    "name": "DDR5 ECC Memory 64GB",
+    "unit_price": 180.0,
+    "active": true
+  },
+  "SKU-MON": {
+    "name": "4K UltraSharp Display",
+    "unit_price": 450.0,
+    "active": true
+  },
+  "SKU-CAB": {
+    "name": "Cat6A Shielded Patch Cable",
+    "unit_price": 15.0,
+    "active": true
+  }
+}

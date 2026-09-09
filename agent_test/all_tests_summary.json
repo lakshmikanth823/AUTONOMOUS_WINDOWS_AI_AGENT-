@@ -151,5 +151,313 @@
         "output": "============================= test session starts =============================\nplatform win32 -- Python 3.11.15, pytest-9.0.2, pluggy-1.6.0\nrootdir: E:\\AI_\\agent_test\nplugins: anyio-4.12.1, asyncio-1.3.0, split-0.11.0, xdist-3.8.0\nasyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function\ncollected 8 items\n\ntest4_test.py ........                                                   [100%]\n\n============================== 8 passed in 0.04s ==============================\n"
       }
     ]
+  },
+  {
+    "test": "Test 5: Use multiple applications",
+    "status": "PASSED",
+    "manifest": {
+      "test": "Test 5: Use Multiple Applications",
+      "timestamp": "2026-09-09T07:16:19Z",
+      "applications_used": [
+        "Filesystem (Data & Template Generation)",
+        "Browser (Playwright Edge DOM Extraction & Web Screenshot)",
+        "Terminal (Subprocess Python Analytics & Host Environment Context)",
+        "Computer (Windows UI & Desktop Frame Capture)"
+      ],
+      "kpi_verified_revenue": "$14,850.00",
+      "store_margin_analytics": {
+        "North-Branch": {
+          "revenue": 6000.0,
+          "profit": 2250.0,
+          "margin_pct": 37.5
+        },
+        "South-Branch": {
+          "revenue": 6800.0,
+          "profit": 2800.0,
+          "margin_pct": 41.18
+        },
+        "West-Branch": {
+          "revenue": 2050.0,
+          "profit": 810.0,
+          "margin_pct": 39.51
+        }
+      },
+      "host_platform": {
+        "platform": "Windows-10-10.0.26200-SP0",
+        "python_version": "3.11.15",
+        "cpu_arch": "AMD64"
+      },
+      "desktop_screen": "1536x864",
+      "artifacts": {
+        "sales_data": "E:\\AI_\\agent_test\\test5_sales_input.json",
+        "dashboard_html": "E:\\AI_\\agent_test\\test5_dashboard.html",
+        "browser_screenshot": "E:\\AI_\\agent_test\\test5_browser_render.png",
+        "desktop_screenshot": "E:\\AI_\\agent_test\\test5_desktop_view.png"
+      },
+      "all_applications_passed": true
+    },
+    "steps": [
+      {
+        "app": "Filesystem",
+        "status": "Files created",
+        "files": [
+          "E:\\AI_\\agent_test\\test5_sales_input.json",
+          "E:\\AI_\\agent_test\\test5_dashboard.html"
+        ]
+      },
+      {
+        "app": "Browser (Playwright Edge)",
+        "nav_success": true,
+        "extracted_revenue": "$14,850.00",
+        "screenshot_captured": true,
+        "verified": true
+      },
+      {
+        "app": "Terminal (PowerShell/Python)",
+        "exit_code": 0,
+        "platform": "Windows-10-10.0.26200-SP0",
+        "store_margins": {
+          "North-Branch": {
+            "revenue": 6000.0,
+            "profit": 2250.0,
+            "margin_pct": 37.5
+          },
+          "South-Branch": {
+            "revenue": 6800.0,
+            "profit": 2800.0,
+            "margin_pct": 41.18
+          },
+          "West-Branch": {
+            "revenue": 2050.0,
+            "profit": 810.0,
+            "margin_pct": 39.51
+          }
+        },
+        "verified": true
+      },
+      {
+        "app": "ComputerTool (Windows Desktop)",
+        "screen_resolution": "1536x864",
+        "visible_windows_count": 0,
+        "desktop_screenshot": true,
+        "verified": true
+      }
+    ]
+  },
+  {
+    "test": "Test 6: Complete a 20+ step business workflow",
+    "status": "PASSED",
+    "steps_count": 22,
+    "summary": {
+      "workflow": "Enterprise Invoicing, Tax, and General Ledger Pipeline",
+      "total_steps_executed": 22,
+      "active_orders_processed": 3,
+      "total_gross_invoiced": 7253.29,
+      "total_net_revenue": 6593.6,
+      "total_taxes_collected": 571.94,
+      "total_shipping_billed": 87.75,
+      "general_ledger_balanced": true,
+      "settlements_reconciled": true,
+      "invoices_directory": "E:\\AI_\\agent_test\\test6_invoices",
+      "audit_manifest": "E:\\AI_\\agent_test\\test6_audit_manifest.json",
+      "status": "SUCCESS"
+    },
+    "workflow_steps": [
+      {
+        "step": 1,
+        "name": "Ingest Raw Purchase Orders",
+        "orders_count": 5
+      },
+      {
+        "step": 2,
+        "name": "Schema & Type Validation",
+        "valid_count": 5
+      },
+      {
+        "step": 3,
+        "name": "Deduplicate Orders",
+        "unique_count": 4
+      },
+      {
+        "step": 4,
+        "name": "Filter Voided Transactions",
+        "active_count": 3
+      },
+      {
+        "step": 5,
+        "name": "Ingest Pricing Catalog",
+        "sku_count": 4
+      },
+      {
+        "step": 6,
+        "name": "Validate Active SKUs",
+        "active_sku_count": 4
+      },
+      {
+        "step": 7,
+        "name": "Reconcile Catalog Pricing",
+        "reconciled_orders": 3
+      },
+      {
+        "step": 8,
+        "name": "Ingest Customer Tier Profiles",
+        "customers_count": 3
+      },
+      {
+        "step": 9,
+        "name": "Calculate Base Subtotals",
+        "subtotals": {
+          "ORD-101": 5720.0,
+          "ORD-102": 1500.0,
+          "ORD-103": 180.0
+        }
+      },
+      {
+        "step": 10,
+        "name": "Apply Volume Discounts",
+        "net_subtotals": {
+          "ORD-101": 5033.6,
+          "ORD-102": 1380.0,
+          "ORD-103": 180.0
+        }
+      },
+      {
+        "step": 11,
+        "name": "Ingest Tax Jurisdictions",
+        "jurisdictions": [
+          "US-CA",
+          "US-NY",
+          "EU-DE"
+        ]
+      },
+      {
+        "step": 12,
+        "name": "Compute Regional Taxes",
+        "taxes": {
+          "ORD-101": 415.27,
+          "ORD-102": 122.47,
+          "ORD-103": 34.2
+        }
+      },
+      {
+        "step": 13,
+        "name": "Calculate Freight & Shipping",
+        "shipping": {
+          "ORD-101": 33.75,
+          "ORD-102": 39.0,
+          "ORD-103": 15.0
+        }
+      },
+      {
+        "step": 14,
+        "name": "Compute Gross Totals",
+        "gross_totals": {
+          "ORD-101": 5482.62,
+          "ORD-102": 1541.47,
+          "ORD-103": 229.2
+        }
+      },
+      {
+        "step": 15,
+        "name": "Generate Double-Entry Ledger",
+        "entries_count": 12
+      },
+      {
+        "step": 16,
+        "name": "Verify Ledger Balancing",
+        "debits": 7253.29,
+        "credits": 7253.29,
+        "balanced": true
+      },
+      {
+        "step": 17,
+        "name": "Generate Invoice Documents",
+        "invoices_generated": 3
+      },
+      {
+        "step": 18,
+        "name": "Verify Invoice File Persistence",
+        "all_files_valid": true
+      },
+      {
+        "step": 19,
+        "name": "Compute Cryptographic Audit Manifest",
+        "hashes_count": 3
+      },
+      {
+        "step": 20,
+        "name": "Ingest Payment Gateway Settlements",
+        "settlement_count": 3
+      },
+      {
+        "step": 21,
+        "name": "Reconcile Settlements",
+        "fully_reconciled": true
+      },
+      {
+        "step": 22,
+        "name": "Emit Final Executive Summary",
+        "status": "COMPLETED"
+      }
+    ]
+  },
+  {
+    "test": "Test 7: Run a task for an extended period with checkpoints",
+    "status": "PASSED",
+    "checkpoints": [
+      "CP-PHASE-1",
+      "CP-PHASE-2",
+      "CP-PHASE-FINAL"
+    ],
+    "total_records_migrated": 30,
+    "steps": [
+      {
+        "phase": 1,
+        "checkpoint": "CP-PHASE-1",
+        "processed": 10
+      },
+      {
+        "phase": 2,
+        "checkpoint": "CP-PHASE-2",
+        "processed": 20
+      },
+      {
+        "phase": 3,
+        "checkpoint": "CP-PHASE-FINAL",
+        "total_records": 30,
+        "verified": true
+      }
+    ]
+  },
+  {
+    "test": "Test 8: Recover from intentionally introduced failures",
+    "status": "PASSED",
+    "recoveries_executed": 3,
+    "steps": [
+      {
+        "scenario": "1. Missing Prerequisite File",
+        "initial_error": "File 'E:\\AI_\\agent_test\\test8_missing_config.json' does not exist.",
+        "category": "tool_failure",
+        "autofix": "Generated missing prerequisite file",
+        "retried_success": true,
+        "verified": true
+      },
+      {
+        "scenario": "2. Python Logic Failure & Autofix",
+        "diagnosed_errors": [
+          "ZeroDivisionError",
+          "TypeError"
+        ],
+        "autofix_applied": true,
+        "retest_passed": true
+      },
+      {
+        "scenario": "3. Malformed Tool Arguments",
+        "initial_error": "Unknown filesystem action: 'invalid_operation_xyz'",
+        "category": "tool_failure",
+        "schema_corrected": true,
+        "verified": true
+      }
+    ]
   }
 ]

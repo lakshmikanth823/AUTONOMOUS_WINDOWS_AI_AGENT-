@@ -1,0 +1,29 @@
+{
+  "invoice_number": "INV-ORD-102",
+  "order_id": "ORD-102",
+  "customer_id": "CUST-VIP-02",
+  "customer_tier": "VIP",
+  "payment_terms": "NET15",
+  "line_items": [
+    {
+      "sku": "SKU-MON",
+      "qty": 3,
+      "unit_price": 450.0,
+      "line_subtotal": 1350.0
+    },
+    {
+      "sku": "SKU-CAB",
+      "qty": 10,
+      "unit_price": 15.0,
+      "line_subtotal": 150.0
+    }
+  ],
+  "subtotal": 1500.0,
+  "discount_amount": 120.0,
+  "net_subtotal": 1380.0,
+  "tax_jurisdiction": "US-NY",
+  "tax_amount": 122.47,
+  "shipping_fee": 39.0,
+  "gross_total": 1541.47,
+  "generated_at": "2026-09-09T07:16:19Z"
+}

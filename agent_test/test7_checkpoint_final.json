@@ -1,0 +1,11 @@
+{
+  "checkpoint_id": "CP-PHASE-FINAL",
+  "batch_range": [
+    1,
+    30
+  ],
+  "records_processed_count": 30,
+  "cumulative_value": 8137.5,
+  "checksum": "aac18c83d25619a60f2ad4790c3ef621ad471212a8fe10b8a2aef67837941181",
+  "status": "COMPLETED"
+}

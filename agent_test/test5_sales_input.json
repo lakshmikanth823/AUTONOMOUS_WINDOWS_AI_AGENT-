@@ -1,0 +1,23 @@
+[
+  {
+    "store": "North-Branch",
+    "item": "CloudServer-X1",
+    "units": 5,
+    "unit_price": 1200.0,
+    "cost": 750.0
+  },
+  {
+    "store": "South-Branch",
+    "item": "Workstation-Pro",
+    "units": 8,
+    "unit_price": 850.0,
+    "cost": 500.0
+  },
+  {
+    "store": "West-Branch",
+    "item": "NetworkSwitch-10G",
+    "units": 4,
+    "unit_price": 512.5,
+    "cost": 310.0
+  }
+]

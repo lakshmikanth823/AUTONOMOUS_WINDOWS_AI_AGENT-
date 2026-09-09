@@ -1,0 +1,14 @@
+{
+  "workflow": "Enterprise Invoicing, Tax, and General Ledger Pipeline",
+  "total_steps_executed": 22,
+  "active_orders_processed": 3,
+  "total_gross_invoiced": 7253.29,
+  "total_net_revenue": 6593.6,
+  "total_taxes_collected": 571.94,
+  "total_shipping_billed": 87.75,
+  "general_ledger_balanced": true,
+  "settlements_reconciled": true,
+  "invoices_directory": "E:\\AI_\\agent_test\\test6_invoices",
+  "audit_manifest": "E:\\AI_\\agent_test\\test6_audit_manifest.json",
+  "status": "SUCCESS"
+}
