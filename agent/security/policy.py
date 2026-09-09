@@ -327,6 +327,7 @@ class SecurityPolicy:
                 "read_element_text",
                 "ocr_screen",
                 "ocr_region",
+                "observe_semantic",
             }
             if action not in known_computer_actions:
                 return SecurityEvaluation(
@@ -342,7 +343,7 @@ class SecurityPolicy:
             elif action in ("mouse_click", "double_click", "right_click", "mouse_scroll", "window_focus"):
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Desktop UI interaction: {action}"
-            elif action in ("observe", "screenshot", "window_list", "mouse_move", "ui_elements", "ui_tree", "read_element_text", "ocr_screen", "ocr_region"):
+            elif action in ("observe", "screenshot", "window_list", "mouse_move", "ui_elements", "ui_tree", "read_element_text", "ocr_screen", "ocr_region", "observe_semantic"):
                 computed_level = PermissionLevel.SAFE
                 reason = f"Desktop observation/cursor positioning: {action}"
             elif action in ("read_window_text", "region_screenshot", "write_clipboard", "window_details"):

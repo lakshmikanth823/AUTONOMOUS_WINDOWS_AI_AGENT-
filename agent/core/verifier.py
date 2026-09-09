@@ -474,6 +474,76 @@ class Verifier:
 
         return True, "All semantic OCR assertions satisfied."
 
+    def _check_perception_assertions(
+        self,
+        out: Dict[str, Any],
+        args: Dict[str, Any],
+        expected: str,
+    ) -> Tuple[bool, str]:
+        """Verify semantic assertions against unified fused perception state."""
+        targets = out.get("targets", [])
+        active_win = out.get("active_window", {})
+
+        # 1. Expected active window
+        exp_win = args.get("expected_window_active") or args.get("expected_window")
+        if exp_win:
+            actual_title = (active_win.get("title") or "").lower()
+            if str(exp_win).lower() not in actual_title:
+                return False, f"Expected active window containing '{exp_win}', but active window was '{active_win.get('title')}'."
+
+        # 2. Minimum targets count
+        min_targets = args.get("expected_min_targets")
+        if min_targets is not None and len(targets) < int(min_targets):
+            return False, f"Expected at least {min_targets} targets, but found {len(targets)}."
+
+        # 3. Expected target present
+        exp_tgt = args.get("expected_target_present")
+        found_target = None
+        if exp_tgt is not None:
+            q = str(exp_tgt).strip().lower()
+            for t in targets:
+                t_name = t.get("name", "").lower()
+                t_ocr = (t.get("ocr_text") or "").lower()
+                t_type = t.get("control_type", "").lower()
+                if q in t_name or q in t_ocr or q == t_type:
+                    found_target = t
+                    break
+            if not found_target:
+                return False, f"Expected target '{exp_tgt}' was not found in perception targets ({len(targets)} total targets)."
+
+        # 4. Expected target source (e.g. "uia", "ocr", or ["uia", "ocr"])
+        exp_source = args.get("expected_target_source")
+        if exp_source is not None and found_target is not None:
+            actual_sources = set(found_target.get("sources", []))
+            if isinstance(exp_source, (list, tuple, set)):
+                req_sources = set(exp_source)
+                if not req_sources.issubset(actual_sources):
+                    return False, f"Target '{exp_tgt}' has sources {list(actual_sources)}, but required sources {list(req_sources)} were not satisfied."
+            else:
+                req_src = str(exp_source).strip().lower()
+                if req_src not in actual_sources:
+                    return False, f"Target '{exp_tgt}' has sources {list(actual_sources)}, which does not include '{req_src}'."
+
+        # 5. Expected target absent
+        exp_absent = args.get("expected_target_absent")
+        if exp_absent is not None:
+            q_abs = str(exp_absent).strip().lower()
+            for t in targets:
+                t_name = t.get("name", "").lower()
+                t_ocr = (t.get("ocr_text") or "").lower()
+                if q_abs in t_name or q_abs in t_ocr:
+                    return False, f"Expected target '{exp_absent}' to be absent, but it was found in perception targets."
+
+        # 6. Disagreement / Contradiction handling
+        exp_disagree = args.get("expected_perception_disagreement")
+        contradictions = out.get("contradictions", [])
+        if exp_disagree is True and not contradictions:
+            return False, "Expected perception disagreement, but none was detected."
+        elif exp_disagree is False and contradictions:
+            return False, f"Unexpected perception disagreement: {contradictions}."
+
+        return True, "All semantic perception assertions satisfied."
+
     def _verify_computer_core(
         self,
         action: str,
@@ -825,6 +895,34 @@ class Verifier:
                 status=VerificationStatus.VERIFIED,
             )
 
+        elif action == "observe_semantic":
+            if not (isinstance(out, dict) and "targets" in out and "active_window" in out):
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification="Perception fusion output missing required 'targets' or 'active_window' keys.",
+                    status=VerificationStatus.FAILED,
+                )
+            passed, reason = self._check_perception_assertions(out, args, expected)
+            if not passed:
+                return VerificationRecord(
+                    action=action,
+                    expected_result=expected,
+                    observation=out,
+                    verification=f"Perception fusion semantic verification failed: {reason}",
+                    status=VerificationStatus.FAILED,
+                )
+            tgt_count = len(out.get("targets", []))
+            win_title = (out.get("active_window") or {}).get("title", "<none>")
+            return VerificationRecord(
+                action=action,
+                expected_result=expected,
+                observation=out,
+                verification=f"Perception fusion verified: {tgt_count} targets in window '{win_title}'. {reason}",
+                status=VerificationStatus.VERIFIED,
+            )
+
         # Fallback for other actions
         return VerificationRecord(
             action=action,
@@ -843,7 +941,7 @@ class Verifier:
     ) -> VerificationRecord:
         """Verify computer action with syntactic checks and optional live semantic assertions."""
         record = self._verify_computer_core(action, args, result, expected)
-        if record.status == VerificationStatus.VERIFIED and action not in ("ui_elements", "ui_tree", "ocr_screen", "ocr_region"):
+        if record.status == VerificationStatus.VERIFIED and action not in ("ui_elements", "ui_tree", "ocr_screen", "ocr_region", "observe_semantic"):
             semantic_keys = (
                 "expected_element_present",
                 "expected_element_absent",

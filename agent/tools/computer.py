@@ -13,6 +13,7 @@ from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
 from agent.tools.base import Tool, ToolResult
 from agent.tools.ocr import WindowsNativeOCR
+from agent.tools.perception import PerceptionEngine
 from agent.tools.uia import UIAClient
 
 # Virtual key mappings for named control and navigation keys
@@ -91,6 +92,7 @@ class ComputerTool(Tool):
                     "read_element_text",
                     "ocr_screen",
                     "ocr_region",
+                    "observe_semantic",
                 ],
                 "description": "The desktop action or observation to perform",
             },
@@ -98,6 +100,11 @@ class ComputerTool(Tool):
             "y": {"type": "integer", "description": "Y screen coordinate (0 to screen height)"},
             "width": {"type": "integer", "description": "Width for region screenshot or OCR region"},
             "height": {"type": "integer", "description": "Height for region screenshot or OCR region"},
+            "ocr_mode": {
+                "type": "string",
+                "enum": ["off", "auto", "region", "screen"],
+                "description": "Selective OCR mode for observe_semantic: off (default fast), auto (if UIA empty), region, or screen",
+            },
             "button": {
                 "type": "string",
                 "enum": ["left", "right", "middle"],
@@ -155,6 +162,7 @@ class ComputerTool(Tool):
         self.kernel32.GlobalFree.restype = wintypes.HGLOBAL
         self.uia = UIAClient()
         self.ocr = WindowsNativeOCR()
+        self.perception = PerceptionEngine(self.uia, self.ocr)
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
@@ -864,6 +872,30 @@ class ComputerTool(Tool):
                         output=out_dict,
                     )
                 return ToolResult(success=True, output=out_dict)
+
+            elif action == "observe_semantic":
+                ocr_mode_arg = str(args.get("ocr_mode", "off")).strip().lower()
+                max_elems = int(args.get("max_elements", 100))
+                max_depth = int(args.get("max_depth", 5))
+                ctype_filter = args.get("control_type")
+                hwnd_val = args.get("hwnd")
+                target_hwnd = int(hwnd_val) if hwnd_val is not None else None
+
+                screen_size = self.get_screen_resolution()
+                cursor_pos = self._get_cursor_position()
+                active_info = self._get_active_window_info()
+
+                fused_state = self.perception.observe(
+                    screen_size=screen_size,
+                    cursor_pos=cursor_pos,
+                    active_window_info=active_info,
+                    ocr_mode=ocr_mode_arg,
+                    max_depth=max_depth,
+                    max_elements=max_elems,
+                    control_type=ctype_filter,
+                    hwnd=target_hwnd,
+                )
+                return ToolResult(success=True, output=fused_state.model_dump())
 
             else:
                 return ToolResult(success=False, error=f"Unknown computer action: '{action}'")

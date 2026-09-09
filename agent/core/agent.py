@@ -370,8 +370,28 @@ class Agent:
                     if target_query:
                         resolved_coords = None
                         target_hwnd = None
+                        ambiguity_detected = False
+                        ambiguity_msg = ""
+
                         for prev_act in reversed(state.actions):
                             if prev_act.tool_name == "computer" and isinstance(prev_act.output, dict):
+                                # 0. Fused Perception targets check
+                                if "targets" in prev_act.output and isinstance(prev_act.output["targets"], list):
+                                    from agent.tools.perception import UnifiedTarget, resolve_target
+                                    raw_targets = [
+                                        UnifiedTarget(**t) if isinstance(t, dict) else t
+                                        for t in prev_act.output["targets"]
+                                    ]
+                                    res_tgt = resolve_target(raw_targets, target_query)
+                                    if res_tgt.status == "AMBIGUOUS":
+                                        ambiguity_detected = True
+                                        ambiguity_msg = res_tgt.reason
+                                        break
+                                    elif res_tgt.status == "RESOLVED" and res_tgt.target:
+                                        resolved_coords = res_tgt.target.center
+                                        target_hwnd = res_tgt.target.hwnd
+                                        break
+
                                 # 1. UIA elements check
                                 for elem in prev_act.output.get("elements", []):
                                     el_name = elem.get("name", "").lower()
@@ -397,20 +417,65 @@ class Agent:
                                         break
                                 if resolved_coords:
                                     break
+
+                        if ambiguity_detected:
+                            # Host safety: deterministic abort on ambiguous target
+                            logger.warning(f"Aborting action due to ambiguity: {ambiguity_msg}")
+                            state.status = TaskStateEnum.VERIFYING
+                            verif_record = VerificationRecord(
+                                action=effective_args.get("action", "mouse_action"),
+                                expected_result=step.expected_result or "Unambiguous target execution",
+                                observation=None,
+                                verification=f"Action aborted: {ambiguity_msg}",
+                                status=VerificationStatus.FAILED,
+                            )
+                            state.verification_records.append(verif_record)
+                            state.actions.append(StepResult(
+                                action_id=f"act_ambiguous_{step.step_id}",
+                                tool_name=step.tool_required,
+                                arguments=effective_args,
+                                success=False,
+                                error=ambiguity_msg,
+                                verification_passed=False,
+                                verification_details=ambiguity_msg,
+                            ))
+                            break
+
                         if not resolved_coords:
                             try:
-                                from agent.tools.uia import UIAClient
-                                uia_client = UIAClient()
-                                res = uia_client.get_active_window_elements(max_elements=200)
-                                q = target_query.lower().strip()
-                                for elem in res.get("elements", []):
-                                    el_name = elem.get("name", "").lower()
-                                    el_type = elem.get("control_type", "").lower()
-                                    el_id = elem.get("automation_id", "").lower()
-                                    if q in el_name or q == el_type or (el_id and q in el_id):
-                                        resolved_coords = elem.get("center")
-                                        target_hwnd = res.get("window", {}).get("hwnd")
+                                comp_tool = self.registry.get("computer")
+                                if hasattr(comp_tool, "perception"):
+                                    fused = comp_tool.perception.observe(
+                                        screen_size=comp_tool.get_screen_resolution(),
+                                        cursor_pos=comp_tool._get_cursor_position(),
+                                        active_window_info=comp_tool._get_active_window_info(),
+                                        ocr_mode="off",
+                                    )
+                                    from agent.tools.perception import resolve_target
+                                    res_tgt = resolve_target(fused.targets, target_query)
+                                    if res_tgt.status == "AMBIGUOUS":
+                                        logger.warning(f"Aborting action due to ambiguity: {res_tgt.reason}")
+                                        verif_record = VerificationRecord(
+                                            action=effective_args.get("action", "mouse_action"),
+                                            expected_result=step.expected_result or "Unambiguous target execution",
+                                            observation=None,
+                                            verification=f"Action aborted: {res_tgt.reason}",
+                                            status=VerificationStatus.FAILED,
+                                        )
+                                        state.verification_records.append(verif_record)
+                                        state.actions.append(StepResult(
+                                            action_id=f"act_ambiguous_{step.step_id}",
+                                            tool_name=step.tool_required,
+                                            arguments=effective_args,
+                                            success=False,
+                                            error=res_tgt.reason,
+                                            verification_passed=False,
+                                            verification_details=res_tgt.reason,
+                                        ))
                                         break
+                                    elif res_tgt.status == "RESOLVED" and res_tgt.target:
+                                        resolved_coords = res_tgt.target.center
+                                        target_hwnd = res_tgt.target.hwnd
                             except Exception:
                                 pass
 
