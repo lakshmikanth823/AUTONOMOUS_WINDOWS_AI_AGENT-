@@ -29,3 +29,23 @@ class ToolExecutionError(ToolError):
 
 class VerificationFailedError(AgentError):
     """Raised when post-action verification fails."""
+
+
+class PlanError(AgentError):
+    """Base exception for planning failures."""
+
+
+class PlanValidationError(PlanError):
+    """Raised when a generated plan fails structural or semantic validation."""
+
+
+class LLMError(AgentError):
+    """Base exception for LLM provider errors."""
+
+
+class LLMTimeoutError(LLMError):
+    """Raised when an LLM request exceeds configured timeout."""
+
+
+class MalformedModelResponseError(LLMError):
+    """Raised when model output cannot be parsed into the expected structured format."""

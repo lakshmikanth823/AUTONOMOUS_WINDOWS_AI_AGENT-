@@ -9,7 +9,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from agent.config.settings import get_settings
+from agent.core.agent import Agent, TaskState
+from agent.core.planner import Planner, PlanStep
 from agent.core.state import Task, TaskStatus
+from agent.llm.provider import get_llm_provider
 from agent.logger import get_task_logger, init_logger
 from agent.tools.registry import registry
 from agent.ui.cli import (
@@ -19,10 +22,11 @@ from agent.ui.cli import (
     print_system_info,
     print_task_card,
     print_tools_table,
+    prompt_for_approval,
 )
 
-# In-memory store for session tasks in Phase 1
-_SESSION_TASKS: List[Task] = []
+# In-memory store for session tasks
+_SESSION_TASKS: List[Any] = []
 
 
 def check_ollama_status(base_url: str) -> Dict[str, Any]:
@@ -86,30 +90,35 @@ def cmd_memory() -> int:
     return 0
 
 
-def cmd_task(goal: str) -> Task:
-    """Create and initialize a new task from a natural-language goal."""
+def handle_approval(step: PlanStep) -> bool:
+    """CLI callback when a step requires human authorization."""
+    return prompt_for_approval(
+        action_name=f"{step.step_id}: {step.objective} (Tool: {step.tool_required})",
+        arguments=step.arguments,
+        permission_level=step.risk_level,
+        reason=f"Step requires {step.risk_level.value} approval before execution.",
+    )
+
+
+def cmd_task(goal: str) -> Any:
+    """Decompose a natural language goal into a validated plan and execute it."""
     settings = get_settings()
     init_logger()
 
-    task = Task(user_goal=goal, status=TaskStatus.RUNNING)
-    _SESSION_TASKS.append(task)
+    provider = get_llm_provider(settings)
+    planner = Planner(provider=provider)
+    agent = Agent(
+        planner=planner,
+        tool_registry=registry,
+        settings=settings,
+        approval_callback=handle_approval,
+    )
 
-    logger = get_task_logger(task.task_id)
-    logger.info(f"Task initialized with goal: {goal}")
-
-    # Phase 1 initialization check: record basic system probe in task results
-    try:
-        sys_tool = registry.get("system_info")
-        res = sys_tool.execute({})
-        task.results.append({"tool": sys_tool.name, "output": res.output})
-        task.status = TaskStatus.COMPLETED
-    except Exception as e:
-        task.errors.append(str(e))
-        task.status = TaskStatus.FAILED
-
-    task.mark_updated()
-    print_task_card(task)
-    return task
+    console.print(f"[bold cyan]Planning Goal:[/bold cyan] {goal}")
+    state = agent.run(goal)
+    _SESSION_TASKS.append(state)
+    print_task_card(state)
+    return state
 
 
 def cmd_start() -> int:

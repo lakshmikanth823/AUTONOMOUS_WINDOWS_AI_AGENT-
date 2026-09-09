@@ -108,16 +108,30 @@ def print_task_card(task: Any) -> None:
     status_str = getattr(task.status, "value", str(task.status))
     color = status_colors.get(status_str, "white")
 
+    plan_steps_count = 0
+    if hasattr(task, "plan") and task.plan:
+        if hasattr(task.plan, "steps"):
+            plan_steps_count = len(task.plan.steps)
+        elif isinstance(task.plan, list):
+            plan_steps_count = len(task.plan)
+
+    results_count = len(getattr(task, "observations", getattr(task, "results", [])))
+    errors_count = len(getattr(task, "errors", []))
+    current_step = getattr(task, "current_step_id", getattr(task, "current_step", "None"))
+
     content = (
         f"[bold]Task ID:[/bold] {task.task_id}\n"
         f"[bold]Goal:[/bold] {task.user_goal}\n"
         f"[bold]Status:[/bold] [{color}]{status_str}[/{color}]\n"
         f"[bold]Created At:[/bold] {task.created_at}\n"
-        f"[bold]Current Step:[/bold] {task.current_step}\n"
-        f"[bold]Plan Steps:[/bold] {len(task.plan)}\n"
-        f"[bold]Results:[/bold] {len(task.results)}\n"
-        f"[bold]Errors:[/bold] {len(task.errors)}"
+        f"[bold]Current Step:[/bold] {current_step}\n"
+        f"[bold]Plan Steps:[/bold] {plan_steps_count}\n"
+        f"[bold]Results/Observations:[/bold] {results_count}\n"
+        f"[bold]Errors:[/bold] {errors_count}"
     )
+    if errors_count > 0:
+        content += f"\n[bold red]Error Detail:[/bold red] {task.errors[0]}"
+
     console.print(Panel(content, title=f"[bold]Task: {task.task_id}[/bold]", border_style="blue"))
 
 
