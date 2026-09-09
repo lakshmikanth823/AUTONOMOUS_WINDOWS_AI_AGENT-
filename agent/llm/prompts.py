@@ -25,6 +25,7 @@ RULES FOR PLANNING:
    - dependencies: List of preceding step_ids that must succeed before this step runs.
 5. If the goal requires destructive or blocked operations, flag them appropriately.
 6. Return ONLY valid JSON adhering strictly to the schema provided.
+7. For filesystem operations (create, read, modify files), use 'filesystem'. For running commands, scripts, or programs (e.g. 'python script.py'), use 'terminal'.
 """
 
 

@@ -15,7 +15,10 @@ from agent.tools.base import Tool, ToolResult
 
 
 class PythonRunnerTool(Tool):
-    """Executes Python code scripts safely, capturing output and exception tracebacks."""
+    """(Deprecated / Secondary) Executes Python code scripts in isolated temp files.
+    
+    TerminalTool is the canonical execution tool for scripts and commands.
+    """
 
     name = "python_runner"
     description = "Execute a Python script or code snippet using the project environment and capture stdout, stderr, and exceptions."

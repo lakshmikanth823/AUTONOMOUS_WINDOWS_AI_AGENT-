@@ -21,7 +21,7 @@ class TerminalTool(Tool):
     """Executes commands safely in a controlled Windows PowerShell session."""
 
     name = "terminal"
-    description = "Execute shell and PowerShell commands safely on Windows 10/11 with structured output capture."
+    description = "Execute shell, PowerShell, and script commands (e.g. 'python script.py') safely on Windows with structured output capture."
     permission_level = PermissionLevel.LOW_RISK
     input_schema = {
         "type": "object",

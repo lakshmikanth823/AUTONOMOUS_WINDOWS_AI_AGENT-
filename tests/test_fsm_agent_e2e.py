@@ -16,7 +16,6 @@ from agent.llm.provider import MockLLMProvider
 from agent.memory.manager import MemoryManager
 from agent.memory.store import MemoryStore
 from agent.tools.filesystem import FilesystemTool
-from agent.tools.python_runner import PythonRunnerTool
 from agent.tools.registry import ToolRegistry, registry as global_registry
 from agent.tools.terminal import TerminalTool
 
@@ -73,9 +72,10 @@ def test_autonomous_agent_end_to_end_workflow(tmp_path: Path):
             {
                 "step_id": "step_3",
                 "objective": "Execute the created Python program and capture output",
-                "tool_required": "python_runner",
+                "tool_required": "terminal",
                 "arguments": {
-                    "code": f"import subprocess, sys\nout = subprocess.check_output([sys.executable, r'{str(code_file)}'], text=True)\nprint(out.strip())",
+                    "command": f'python "{code_file}"',
+                    "working_directory": str(proj_dir),
                 },
                 "expected_result": "Program prints Hello World with exit code 0",
                 "risk_level": "LOW_RISK",
@@ -119,9 +119,9 @@ def test_autonomous_agent_end_to_end_workflow(tmp_path: Path):
     assert "print('Hello World')" in code_file.read_text(encoding="utf-8")
 
     # 3. Execution verified
-    py_action = [a for a in state.actions if a.tool_name == "python_runner"][0]
-    assert py_action.success is True
-    assert "Hello World" in py_action.output["stdout"]
+    term_action = [a for a in state.actions if a.tool_name == "terminal"][0]
+    assert term_action.success is True
+    assert "Hello World" in term_action.output["stdout"]
 
     # 4. Artifacts recorded
     assert str(proj_dir) in state.artifacts_created
@@ -138,7 +138,7 @@ def test_autonomous_agent_end_to_end_workflow(tmp_path: Path):
     assert report.final_status == TaskStateEnum.COMPLETED
     assert report.total_tool_calls == 4
     assert "filesystem" in report.tools_used
-    assert "python_runner" in report.tools_used
+    assert "terminal" in report.tools_used
 
     # 7. Formatted markdown output includes all required sections
     md = report.format_markdown()
