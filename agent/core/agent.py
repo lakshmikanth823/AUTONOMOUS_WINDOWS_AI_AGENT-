@@ -1,4 +1,4 @@
-"""Agent orchestration loop: Goal -> Plan -> Validate -> Execute -> Observe -> Verify -> Update State."""
+"""Agent orchestration loop integrating Goal -> Plan -> Validate -> Execute -> Verify -> Recover."""
 
 from __future__ import annotations
 
@@ -10,14 +10,27 @@ from pydantic import BaseModel, Field
 from agent.config.permissions import PermissionLevel, can_auto_execute
 from agent.config.settings import Settings, get_settings
 from agent.core.planner import Decision, Plan, Planner, PlanStep
+from agent.core.recovery import (
+    FailureCategory,
+    FailureClassifier,
+    RecoveryAction,
+    RecoveryManager,
+    RetryPolicy,
+)
 from agent.core.state import StepResult, TaskStatus
+from agent.core.verifier import (
+    VerificationRecord,
+    VerificationStatus,
+    Verifier,
+    default_verifier,
+)
 from agent.exceptions import (
     PermissionDeniedError,
     PlanValidationError,
     ToolError,
 )
 from agent.logger import get_task_logger
-from agent.tools.base import ToolResult, VerificationResult
+from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry, registry as default_registry
 
 
@@ -30,6 +43,7 @@ class TaskState(BaseModel):
     plan: Optional[Plan] = None
     current_step_id: Optional[str] = None
     observations: List[StepResult] = Field(default_factory=list)
+    verification_records: List[VerificationRecord] = Field(default_factory=list)
     retry_counts: Dict[str, int] = Field(default_factory=dict)
     errors: List[str] = Field(default_factory=list)
     created_at: str = Field(
@@ -45,7 +59,7 @@ class TaskState(BaseModel):
 
 
 class Agent:
-    """Core autonomous agent orchestrating the goal-plan-execute-verify cycle."""
+    """Core autonomous agent orchestrating planning, execution, verification, and recovery."""
 
     def __init__(
         self,
@@ -53,14 +67,22 @@ class Agent:
         tool_registry: Optional[ToolRegistry] = None,
         settings: Optional[Settings] = None,
         approval_callback: Optional[Callable[[PlanStep], bool]] = None,
+        verifier: Optional[Verifier] = None,
+        recovery_manager: Optional[RecoveryManager] = None,
+        escalation_callback: Optional[Callable[[str, PlanStep], bool]] = None,
     ) -> None:
         self.planner = planner
         self.registry = tool_registry or default_registry
         self.settings = settings or get_settings()
         self.approval_callback = approval_callback
+        self.verifier = verifier or default_verifier
+        self.recovery_manager = recovery_manager or RecoveryManager(
+            max_retries=self.settings.max_retry_attempts
+        )
+        self.escalation_callback = escalation_callback
 
     def run(self, goal: str) -> TaskState:
-        """Execute the full agent loop for a user goal."""
+        """Execute the complete goal-plan-execute-verify-recover cycle."""
         state = TaskState(user_goal=goal, status=TaskStatus.RUNNING)
         logger = get_task_logger(state.task_id)
         logger.info(f"Received goal: {goal}")
@@ -123,61 +145,89 @@ class Agent:
                     state.mark_updated()
                     return state
 
-            # Retry loop for the individual step
+            # Controlled recovery loop for the individual step
             step_success = False
             retries = 0
+            effective_args = dict(step.arguments)
 
             while retries <= max_step_retries and not step_success:
                 try:
                     # 4. EXECUTE STEP
-                    tool_result = self.registry.execute(step.tool_required, step.arguments)
-
-                    # 5. VERIFY
-                    verif = self.registry.verify(step.tool_required, step.arguments, tool_result)
-
-                    # 6. OBSERVE
-                    obs = StepResult(
-                        tool_name=step.tool_required,
-                        arguments=step.arguments,
-                        success=tool_result.success and verif.passed,
-                        output=tool_result.output,
-                        error=tool_result.error or (verif.details if not verif.passed else None),
-                        verification_passed=verif.passed,
-                        verification_details=verif.details,
-                    )
-                    state.observations.append(obs)
-
-                    if obs.success:
-                        step_success = True
-                        step.status = "completed"
-                        logger.info(f"Step {step.step_id} succeeded and verified.")
-                    else:
-                        retries += 1
-                        state.retry_counts[step.step_id] = retries
-                        logger.warning(
-                            f"Step {step.step_id} failed verification (attempt {retries}/{max_step_retries + 1}): "
-                            f"{obs.error}"
-                        )
-
+                    tool_result = self.registry.execute(step.tool_required, effective_args)
                 except ToolError as e:
-                    retries += 1
-                    state.retry_counts[step.step_id] = retries
-                    logger.warning(f"Tool error on step {step.step_id} (attempt {retries}): {e}")
-                    if retries > max_step_retries:
-                        state.errors.append(f"Step {step.step_id} failed: {e}")
-
+                    tool_result = ToolResult(success=False, error=str(e))
                 except Exception as e:
-                    retries += 1
-                    state.retry_counts[step.step_id] = retries
-                    logger.error(f"Unexpected error on step {step.step_id}: {e}")
-                    if retries > max_step_retries:
-                        state.errors.append(f"Step {step.step_id} unhandled error: {e}")
+                    tool_result = ToolResult(success=False, error=f"Unexpected runtime error: {e}")
+
+                # 5. VERIFY (ACTION, EXPECTED, OBSERVATION, VERIFICATION, STATUS)
+                verif_record = self.verifier.verify(
+                    tool_name=step.tool_required,
+                    arguments=effective_args,
+                    tool_result=tool_result,
+                    expected_result=step.expected_result,
+                )
+                state.verification_records.append(verif_record)
+
+                # 6. OBSERVE
+                is_step_verified = (verif_record.status == VerificationStatus.VERIFIED)
+                obs = StepResult(
+                    tool_name=step.tool_required,
+                    arguments=effective_args,
+                    success=is_step_verified,
+                    output=tool_result.output,
+                    error=tool_result.error if not is_step_verified else None,
+                    verification_passed=is_step_verified,
+                    verification_details=verif_record.verification,
+                )
+                state.observations.append(obs)
+
+                if is_step_verified:
+                    step_success = True
+                    step.status = "completed"
+                    logger.info(f"Step {step.step_id} VERIFIED: {verif_record.verification}")
+                    break
+
+                # Step failed or failed verification -> Trigger Recovery Strategy
+                retries += 1
+                state.retry_counts[step.step_id] = retries
+                err_text = tool_result.error or verif_record.verification
+
+                recovery_decision = self.recovery_manager.evaluate_recovery(
+                    step=step,
+                    error=err_text,
+                    tool_result=tool_result,
+                    verification=verif_record,
+                    current_attempt=retries,
+                    human_escalation_callback=self.escalation_callback,
+                )
+
+                logger.warning(
+                    f"Step {step.step_id} failed verification (attempt {retries}/{max_step_retries + 1}): "
+                    f"Category: {recovery_decision.category.value}. Decision: {recovery_decision.action} ({recovery_decision.reason})"
+                )
+
+                if recovery_decision.action == "MODIFY_STRATEGY":
+                    if recovery_decision.new_arguments:
+                        effective_args = recovery_decision.new_arguments
+                        logger.info(f"Modified arguments for step {step.step_id}: {effective_args}")
+                elif recovery_decision.action == "RETRY":
+                    pass  # Continue to next iteration of while loop
+                else:
+                    # ABORT or ESCALATE_TO_HUMAN failed to recover
+                    err_summary = (
+                        f"Step '{step.step_id}' failed: {err_text}. "
+                        f"Recovery halted ({recovery_decision.action}): {recovery_decision.reason}"
+                    )
+                    step.status = "failed"
+                    state.errors.append(err_summary)
+                    state.status = TaskStatus.FAILED
+                    state.mark_updated()
+                    logger.error(err_summary)
+                    return state
 
             if not step_success:
                 step.status = "failed"
-                err_summary = f"Step '{step.step_id}' failed after {max_step_retries + 1} attempts."
-                if state.observations and state.observations[-1].error:
-                    err_summary += f" Last error: {state.observations[-1].error}"
+                err_summary = f"Step '{step.step_id}' failed after {retries} attempts. Last error: {obs.error}"
                 state.errors.append(err_summary)
                 state.status = TaskStatus.FAILED
                 state.mark_updated()
