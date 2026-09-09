@@ -341,7 +341,7 @@ class ComputerTool(Tool):
             width, height = self.get_screen_resolution()
 
             # Stale target safety check for interactive mouse actions and direct element text input
-            if action in ("mouse_move", "mouse_click", "double_click", "right_click", "set_element_text"):
+            if action in ("mouse_move", "mouse_click", "double_click", "right_click", "set_element_text", "click_element", "type_text"):
                 expected_hwnd = args.get("expected_hwnd")
                 if expected_hwnd is not None:
                     curr_hwnd = self.user32.GetForegroundWindow()

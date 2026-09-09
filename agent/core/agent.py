@@ -88,19 +88,67 @@ class Agent:
         self._is_paused: bool = False
         self._is_cancelled: bool = False
 
+    def _transition_to(self, state: TaskState, new_status: TaskStateEnum, detail: str = "") -> None:
+        """Transition task state to new FSM status and record transition in state_history."""
+        state.status = new_status
+        state.mark_updated()
+        entry = new_status.value
+        if detail:
+            entry = f"{new_status.value}:{detail}"
+        state.state_history.append(entry)
+
+    def _verify_goal_in_final_state(self, state: TaskState) -> bool:
+        """Verify that the actual final state genuinely satisfies the user goal.
+        
+        Enforces that:
+        - tool success != goal success
+        - plan exhaustion != goal success
+        """
+        # 1. Unresolved remaining issues or empty execution block goal completion
+        if state.remaining_issues or not state.actions:
+            return False
+
+        # 2. All current plan steps must have completed successfully
+        if not state.plan or not state.plan.steps:
+            return False
+        if any(s.status != "completed" for s in state.plan.steps):
+            return False
+
+        # 3. Query verifier.verify_goal()
+        if hasattr(self.verifier, "verify_goal"):
+            try:
+                res = self.verifier.verify_goal(
+                    goal=state.user_goal,
+                    state=state,
+                    last_observation=state.last_observation,
+                )
+                if isinstance(res, tuple):
+                    passed, reason = res
+                    if not passed:
+                        logger = get_task_logger(state.task_id)
+                        logger.warning(f"Goal verification failed by verifier: {reason}")
+                    return bool(passed)
+                return bool(res)
+            except Exception as e:
+                logger = get_task_logger(state.task_id)
+                logger.warning(f"Verifier verify_goal raised exception: {e}")
+                return False
+
+        return True
+
     def pause(self) -> None:
         """Pause active task execution."""
         self._is_paused = True
         if self._current_state:
             self._current_state.is_paused = True
-            self._current_state.status = TaskStateEnum.PAUSED
+            self._transition_to(self._current_state, TaskStateEnum.PAUSED)
 
     def cancel(self) -> None:
         """Cancel active task execution."""
         self._is_cancelled = True
         if self._current_state:
             self._current_state.is_cancelled = True
-            self._current_state.status = TaskStateEnum.CANCELLED
+            self._transition_to(self._current_state, TaskStateEnum.CANCELLED)
 
     def resume(self, state: Optional[TaskState] = None) -> TaskState:
         """Resume execution of a paused task."""
@@ -130,24 +178,23 @@ class Agent:
             status=TaskStateEnum.RECEIVED,
             is_cancelled=is_cancelling,
             is_paused=is_pausing,
+            state_history=[TaskStateEnum.RECEIVED.value],
         )
         self._current_state = state
         logger = get_task_logger(state.task_id)
         logger.info(f"FSM State [RECEIVED]: {goal}")
 
         if state.is_cancelled:
-            state.status = TaskStateEnum.CANCELLED
+            self._transition_to(state, TaskStateEnum.CANCELLED)
             state.end_time = time.perf_counter()
             state.duration_seconds = state.end_time - state.start_time
-            state.mark_updated()
             logger.warning(f"Task {state.task_id} cancelled before execution.")
             return state
 
         if state.is_paused:
-            state.status = TaskStateEnum.PAUSED
+            self._transition_to(state, TaskStateEnum.PAUSED)
             state.end_time = time.perf_counter()
             state.duration_seconds = state.end_time - state.start_time
-            state.mark_updated()
             logger.info(f"Task {state.task_id} paused before execution.")
             return state
 
@@ -157,8 +204,7 @@ class Agent:
         logger = get_task_logger(state.task_id)
 
         # 1. UNDERSTANDING & CONTEXT RETRIEVAL
-        state.status = TaskStateEnum.UNDERSTANDING
-        state.mark_updated()
+        self._transition_to(state, TaskStateEnum.UNDERSTANDING)
         logger.info("FSM State [UNDERSTANDING]: Retrieving memory context.")
 
         memory_context = ""
@@ -171,8 +217,7 @@ class Agent:
                 logger.warning(f"Memory context retrieval failed: {e}")
 
         # 2. PLANNING & PLAN VALIDATION
-        state.status = TaskStateEnum.PLANNING
-        state.mark_updated()
+        self._transition_to(state, TaskStateEnum.PLANNING)
         logger.info("FSM State [PLANNING]: Generating structured plan.")
 
         try:
@@ -188,19 +233,17 @@ class Agent:
             logger.error(f"Plan validation rejected: {e}")
             state.errors.append(f"Plan validation rejected: {e}")
             state.remaining_issues.append(str(e))
-            state.status = TaskStateEnum.FAILED
+            self._transition_to(state, TaskStateEnum.FAILED, "PLAN_VALIDATION_REJECTED")
             state.end_time = time.perf_counter()
             state.duration_seconds = state.end_time - state.start_time
-            state.mark_updated()
             return state
         except Exception as e:
             logger.error(f"Planning failed: {e}")
             state.errors.append(f"Planning failed: {e}")
             state.remaining_issues.append(str(e))
-            state.status = TaskStateEnum.FAILED
+            self._transition_to(state, TaskStateEnum.FAILED, "PLANNING_FAILED")
             state.end_time = time.perf_counter()
             state.duration_seconds = state.end_time - state.start_time
-            state.mark_updated()
             return state
 
         return self._execute_plan_loop(state, start_index=0)
@@ -209,7 +252,7 @@ class Agent:
         logger = get_task_logger(state.task_id)
         plan = state.plan
         if not plan:
-            state.status = TaskStateEnum.FAILED
+            self._transition_to(state, TaskStateEnum.FAILED, "NO_PLAN")
             state.errors.append("No plan available to execute.")
             return state
 
@@ -218,6 +261,7 @@ class Agent:
             try:
                 comp_tool = self.registry.get("computer")
                 if comp_tool:
+                    self._transition_to(state, TaskStateEnum.OBSERVING, "initial_world_state")
                     init_obs = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
                     if init_obs.success:
                         state.last_observation = init_obs.output
@@ -243,14 +287,14 @@ class Agent:
             # Cancellation check
             if state.is_cancelled or self._is_cancelled:
                 state.is_cancelled = True
-                state.status = TaskStateEnum.CANCELLED
+                self._transition_to(state, TaskStateEnum.CANCELLED)
                 logger.warning(f"Task {state.task_id} cancelled by user.")
                 break
 
             # Pause check
             if state.is_paused or self._is_paused:
                 state.is_paused = True
-                state.status = TaskStateEnum.PAUSED
+                self._transition_to(state, TaskStateEnum.PAUSED)
                 logger.info(f"Task {state.task_id} paused at step {step.step_id}.")
                 break
 
@@ -260,24 +304,24 @@ class Agent:
                 err = f"Task exceeded maximum execution time ({self.limits.max_execution_time_seconds}s)."
                 state.errors.append(err)
                 state.remaining_issues.append(err)
-                state.status = TaskStateEnum.FAILED
                 state.termination_reason = "LIMIT_REACHED"
+                self._transition_to(state, TaskStateEnum.FAILED, "LIMIT_REACHED")
                 break
 
             if state.total_tool_calls >= self.limits.max_tool_calls:
                 err = f"Task exceeded maximum tool call limit ({self.limits.max_tool_calls})."
                 state.errors.append(err)
                 state.remaining_issues.append(err)
-                state.status = TaskStateEnum.FAILED
                 state.termination_reason = "LIMIT_REACHED"
+                self._transition_to(state, TaskStateEnum.FAILED, "LIMIT_REACHED")
                 break
 
             if step_idx >= self.limits.max_steps or len(state.actions) >= self.limits.max_steps:
                 err = f"Task exceeded maximum allowed steps ({self.limits.max_steps})."
                 state.errors.append(err)
                 state.remaining_issues.append(err)
-                state.status = TaskStateEnum.FAILED
                 state.termination_reason = "LIMIT_REACHED"
+                self._transition_to(state, TaskStateEnum.FAILED, "LIMIT_REACHED")
                 break
 
             # 1. Emergency stop check
@@ -286,8 +330,8 @@ class Agent:
                 err_msg = f"Task aborted: emergency stop is active ({emergency_stop.reason})"
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
-                state.status = TaskStateEnum.CANCELLED
                 state.termination_reason = "EMERGENCY_STOP"
+                self._transition_to(state, TaskStateEnum.CANCELLED, "EMERGENCY_STOP")
                 logger.critical(err_msg)
                 break
 
@@ -296,8 +340,8 @@ class Agent:
                 err_msg = "Execution velocity exceeded configured rate limits."
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
-                state.status = TaskStateEnum.FAILED
                 state.termination_reason = "RATE_LIMIT_EXCEEDED"
+                self._transition_to(state, TaskStateEnum.FAILED, "RATE_LIMIT_EXCEEDED")
                 logger.error(err_msg)
                 break
 
@@ -318,8 +362,8 @@ class Agent:
                 err_msg = f"Step '{step.step_id}' is permanently BLOCKED by security policy."
                 state.errors.append(err_msg)
                 state.remaining_issues.append(err_msg)
-                state.status = TaskStateEnum.FAILED
                 state.termination_reason = "SECURITY_BLOCKED"
+                self._transition_to(state, TaskStateEnum.FAILED, "SECURITY_BLOCKED")
                 self.audit_logger.log_action(
                     task_id=state.task_id,
                     action_id=f"act_blocked_{step.step_id}",
@@ -339,8 +383,7 @@ class Agent:
             )
 
             if requires_human:
-                state.status = TaskStateEnum.WAITING_FOR_APPROVAL
-                state.mark_updated()
+                self._transition_to(state, TaskStateEnum.WAITING_FOR_APPROVAL, step.step_id)
                 logger.info(f"FSM State [WAITING_FOR_APPROVAL] for step {step.step_id}: {sec_eval.reason}")
 
                 approved = False
@@ -359,8 +402,8 @@ class Agent:
                     err_msg = f"Step '{step.step_id}' required human approval but was rejected."
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
-                    state.status = TaskStateEnum.FAILED
                     state.termination_reason = "APPROVAL_REJECTED"
+                    self._transition_to(state, TaskStateEnum.FAILED, "APPROVAL_REJECTED")
                     self.audit_logger.log_action(
                         task_id=state.task_id,
                         action_id=f"act_rejected_{step.step_id}",
@@ -380,8 +423,7 @@ class Agent:
 
             while retries <= self.limits.max_retries_per_step and not step_success:
                 # 4. EXECUTION
-                state.status = TaskStateEnum.EXECUTING
-                state.mark_updated()
+                self._transition_to(state, TaskStateEnum.EXECUTING, step.step_id)
                 state.tools_used.add(step.tool_required)
                 state.total_tool_calls += 1
 
@@ -530,7 +572,7 @@ class Agent:
                 stale_aborted = False
                 expected_hwnd = effective_args.get("expected_hwnd")
                 if expected_hwnd is not None and step.tool_required == "computer" and effective_args.get("action") in (
-                    "mouse_click", "double_click", "right_click", "mouse_move"
+                    "mouse_click", "double_click", "right_click", "mouse_move", "set_element_text", "click_element", "type_text"
                 ):
                     try:
                         import ctypes
@@ -588,6 +630,7 @@ class Agent:
                 # Mutating action post-action observation
                 if step.tool_required == "computer" and not stale_aborted and tool_result.success:
                     try:
+                        self._transition_to(state, TaskStateEnum.OBSERVING, step.step_id)
                         comp_tool = self.registry.get("computer")
                         post_obs = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
                         if post_obs.success:
@@ -609,8 +652,7 @@ class Agent:
                         state.artifacts_created.append(tool_result.output["screenshot_path"])
 
                 # 5. VERIFICATION
-                state.status = TaskStateEnum.VERIFYING
-                state.mark_updated()
+                self._transition_to(state, TaskStateEnum.VERIFYING, step.step_id)
 
                 verif_record = self.verifier.verify(
                     tool_name=step.tool_required,
@@ -653,25 +695,24 @@ class Agent:
                     break
 
                 # 6. RECOVERY
-                state.status = TaskStateEnum.RECOVERING
-                state.mark_updated()
                 retries += 1
                 state.retry_counts[step.step_id] = retries
+                self._transition_to(state, TaskStateEnum.RECOVERING, f"{step.step_id}:{retries}")
 
                 # Loop detection: check consecutive identical action attempts without verified progress
                 state_sig = f"{step.tool_required}:{effective_args.get('action', '')}:{str(sorted((k, str(v)) for k, v in effective_args.items() if k != 'x' and k != 'y'))}"
-                if state.state_history and state.state_history[-1] == state_sig:
+                if state.action_signatures and state.action_signatures[-1] == state_sig:
                     state.consecutive_no_progress_count += 1
                 else:
                     state.consecutive_no_progress_count = 1
-                state.state_history.append(state_sig)
+                state.action_signatures.append(state_sig)
 
                 if state.consecutive_no_progress_count >= self.limits.max_consecutive_no_progress:
                     err_msg = f"Loop detected: No progress after {state.consecutive_no_progress_count} consecutive identical attempts ({state_sig}). Action aborted."
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
-                    state.status = TaskStateEnum.FAILED
                     state.termination_reason = "NO_PROGRESS"
+                    self._transition_to(state, TaskStateEnum.FAILED, "NO_PROGRESS")
                     logger.error(err_msg)
                     break
 
@@ -709,7 +750,7 @@ class Agent:
                     err_msg = f"Recovery halted on step '{step.step_id}': {recovery_decision.reason}"
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
-                    state.status = TaskStateEnum.FAILED
+                    self._transition_to(state, TaskStateEnum.FAILED, "RECOVERY_HALTED")
                     break
 
             if not step_success:
@@ -725,9 +766,8 @@ class Agent:
                 )
 
                 if can_replan:
-                    state.status = TaskStateEnum.REPLANNING
-                    state.mark_updated()
                     state.replan_count += 1
+                    self._transition_to(state, TaskStateEnum.REPLANNING, f"attempt_{state.replan_count}")
                     err_text = (
                         tool_result.error
                         if 'tool_result' in locals() and tool_result and tool_result.error
@@ -747,6 +787,7 @@ class Agent:
                         )
                         if revised_plan and revised_plan.steps:
                             state.plan = revised_plan
+                            state.remaining_issues.clear()
                             state.errors_and_recoveries.append({
                                 "step": step.step_id,
                                 "strategy": "REPLAN",
@@ -757,10 +798,10 @@ class Agent:
                     except Exception as e:
                         logger.warning(f"Replanning attempt failed: {e}")
 
-                state.status = TaskStateEnum.FAILED
                 state.remaining_issues.append(f"Step '{step.step_id}' failed all execution attempts.")
                 if not state.termination_reason:
                     state.termination_reason = "STEP_FAILED"
+                self._transition_to(state, TaskStateEnum.FAILED, state.termination_reason)
                 break
 
             # Advance to next step
@@ -768,9 +809,16 @@ class Agent:
 
         # 7. COMPLETION OR FINAL STATUS RESOLUTION
         if state.status not in (TaskStateEnum.FAILED, TaskStateEnum.CANCELLED, TaskStateEnum.PAUSED):
-            state.status = TaskStateEnum.COMPLETED
-            state.goal_verified = True
-            state.termination_reason = "GOAL_VERIFIED"
+            goal_ok = self._verify_goal_in_final_state(state)
+            if goal_ok:
+                state.goal_verified = True
+                state.termination_reason = "GOAL_VERIFIED"
+                self._transition_to(state, TaskStateEnum.COMPLETED, "GOAL_VERIFIED")
+            else:
+                state.goal_verified = False
+                state.termination_reason = "GOAL_NOT_VERIFIED"
+                state.errors.append("Goal state not verified in final world state.")
+                self._transition_to(state, TaskStateEnum.FAILED, "GOAL_NOT_VERIFIED")
 
         state.current_step_id = None
         state.end_time = time.perf_counter()

@@ -692,3 +692,106 @@ def test_m_goal_completion_verified_in_actual_state() -> None:
     assert state.status == TaskStateEnum.COMPLETED
     assert state.goal_verified is True
     assert state.termination_reason == "GOAL_VERIFIED"
+
+
+def test_n_plan_exhaustion_with_false_final_state_fails_goal_verification() -> None:
+    """Test N: All planned actions return success, but actual final state fails goal verification."""
+    tool = DummyMockTool(
+        name="workspace",
+        result_sequence=[
+            ToolResult(success=True, output={"status": "installed", "version": "1.0"}),
+        ],
+    )
+    reg = ToolRegistry()
+    reg.register(tool)
+
+    plan = Plan(
+        goal="Verify system version is '2.0'",
+        steps=[
+            PlanStep(
+                step_id="step_1",
+                objective="Run status probe",
+                tool_required="workspace",
+                arguments={"action": "probe"},
+                expected_result="Probe executed",
+            )
+        ],
+    )
+    planner = MagicMock()
+    planner.create_plan.return_value = plan
+
+    # Step verification passes because tool executed the probe cleanly
+    verifier = MagicMock()
+    verifier.verify.return_value = VerificationRecord(
+        action="probe",
+        expected_result="Probe executed",
+        observation={"version": "1.0"},
+        verification="Probe completed successfully",
+        status=VerificationStatus.VERIFIED,
+    )
+    # But verifier.verify_goal reports that the final state does not satisfy the goal
+    verifier.verify_goal.return_value = (False, "Final state version is 1.0, does not meet goal '2.0'")
+
+    agent = Agent(planner=planner, tool_registry=reg, verifier=verifier)
+    state = agent.run("Verify system version is '2.0'")
+
+    assert state.status == TaskStateEnum.FAILED
+    assert state.status != TaskStateEnum.COMPLETED
+    assert state.goal_verified is False
+    assert state.termination_reason == "GOAL_NOT_VERIFIED"
+
+
+def test_o_state_history_records_meaningful_lifecycle_transitions() -> None:
+    """Test O: State history accurately records multi-step FSM lifecycle transitions."""
+    tool = DummyMockTool(name="workspace")
+    reg = ToolRegistry()
+    reg.register(tool)
+
+    plan = Plan(
+        goal="Simple multi-step lifecycle",
+        steps=[
+            PlanStep(
+                step_id="step_1",
+                objective="First action",
+                tool_required="workspace",
+                arguments={"action": "act_1"},
+                expected_result="act_1 ok",
+            ),
+            PlanStep(
+                step_id="step_2",
+                objective="Second action",
+                tool_required="workspace",
+                arguments={"action": "act_2"},
+                expected_result="act_2 ok",
+                dependencies=["step_1"],
+            ),
+        ],
+    )
+    planner = MagicMock()
+    planner.create_plan.return_value = plan
+
+    verifier = MagicMock()
+    verifier.verify.return_value = VerificationRecord(
+        action="act",
+        expected_result="ok",
+        observation=None,
+        verification="Step verified",
+        status=VerificationStatus.VERIFIED,
+    )
+
+    agent = Agent(planner=planner, tool_registry=reg, verifier=verifier)
+    state = agent.run("Simple multi-step lifecycle")
+
+    assert state.status == TaskStateEnum.COMPLETED
+    assert len(state.state_history) >= 6
+
+    # Verify meaningful transition states are present in chronological order
+    history_str = " -> ".join(state.state_history)
+    assert "RECEIVED" in history_str
+    assert "UNDERSTANDING" in history_str
+    assert "PLANNING" in history_str
+    assert "EXECUTING:step_1" in history_str
+    assert "VERIFYING:step_1" in history_str
+    assert "EXECUTING:step_2" in history_str
+    assert "VERIFYING:step_2" in history_str
+    assert "COMPLETED:GOAL_VERIFIED" in history_str

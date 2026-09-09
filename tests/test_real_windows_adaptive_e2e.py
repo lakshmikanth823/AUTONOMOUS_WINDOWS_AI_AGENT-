@@ -1,14 +1,20 @@
 """Real-world E2E demonstration of Phase 4: Autonomous Adaptive Loop on Real Windows Desktop.
 
-Validates the full adaptive loop against a live Windows desktop application (Notepad):
-1. Process launch and initial observation capture (capturing HWND and semantic targets).
-2. Action execution with expected state (typing unique string into Notepad).
-3. Post-action observation capture and state change verification (reading back typed text).
-4. Injected unexpected state change (switching foreground focus away to another window/desktop).
-5. Dynamic detection of state mismatch / stale window condition.
-6. Autonomous recovery & replanning: re-observing world state, reacquiring window, and resuming execution.
-7. Verified completion: goal verified in actual state, zero leftover processes.
-8. Comprehensive telemetry recording: steps, observations, actions, retries, replans, latency.
+Hardened validation on a live Windows desktop application (Notepad):
+1. Process launch and real observation capture (capturing real HWND and semantic targets).
+2. Distinction between INVALID TARGET vs STALE BUT PREVIOUSLY VALID TARGET:
+   - Genuine observed Notepad HWND is recorded.
+   - Foreground is switched away to another real desktop window (Shell/Desktop).
+   - Action targeted at previously valid HWND is detected as STALE.
+   - Host controller safely aborts action before mouse/keyboard events.
+3. Explicit Approval Boundary Evidence:
+   - Part A (Negative Path): Sensitive action rejected by approval callback -> halted immediately.
+   - Part B (Positive Path): Sensitive replanned action approved by callback -> executes safely.
+4. Autonomous recovery & adaptive replanning:
+   - Re-observes world state, re-focuses Notepad, reacquires target, and completes execution.
+5. State-Based Goal Verification:
+   - Live readback and observation confirms exact expected text in editor before declaring completion.
+6. Clean process termination and complete lifecycle telemetry.
 """
 
 import ctypes
@@ -19,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock
 
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,11 +40,11 @@ from agent.tools.perception import resolve_target
 from agent.tools.registry import ToolRegistry
 
 
-class AdaptiveE2EPlanner(Planner):
-    """Deterministic adaptive planner that adapts based on actual observation states."""
+class HardenedAdaptiveE2EPlanner(Planner):
+    """Deterministic adaptive planner adapting based on real observed desktop state."""
 
-    def __init__(self, target_hwnd: int, notepad_title: str = "Notepad") -> None:
-        self.target_hwnd = target_hwnd
+    def __init__(self, real_notepad_hwnd: int, notepad_title: str = "Notepad") -> None:
+        self.real_notepad_hwnd = real_notepad_hwnd
         self.notepad_title = notepad_title
         self.replan_invocations: List[Dict[str, Any]] = []
 
@@ -47,20 +54,25 @@ class AdaptiveE2EPlanner(Planner):
         available_tools: Optional[List[Any]] = None,
         memory_context: Optional[str] = None,
     ) -> Plan:
-        """Initial plan: write text into Notepad assuming it is in focus."""
+        """Initial plan: uses the REAL, previously observed Notepad HWND.
+
+        When the foreground window is subsequently shifted away to Shell/Desktop,
+        this previously valid target becomes genuinely STALE.
+        """
         return Plan(
             goal=goal,
-            rationale="Initial plan to set element text in Notepad",
+            rationale="Initial plan targeting the previously observed Notepad window",
             steps=[
                 PlanStep(
                     step_id="step_1",
-                    objective="Write adaptive verified string into Notepad using pre-disruption stale reference",
+                    objective="Write verified string into Notepad using previously observed valid target reference",
                     tool_required="computer",
                     arguments={
                         "action": "set_element_text",
                         "text": "Adaptive Loop 2026",
                         "target_element": "Text editor",
-                        "hwnd": 9999999,  # Stale/invalid HWND injected
+                        "expected_hwnd": self.real_notepad_hwnd,
+                        "hwnd": self.real_notepad_hwnd,
                     },
                     expected_result="Text editor contains 'Adaptive Loop 2026'",
                     risk_level=PermissionLevel.LOW_RISK,
@@ -72,7 +84,7 @@ class AdaptiveE2EPlanner(Planner):
                     arguments={
                         "action": "read_element_text",
                         "target_element": "Text editor",
-                        "hwnd": self.target_hwnd,
+                        "hwnd": self.real_notepad_hwnd,
                     },
                     expected_result="Adaptive Loop 2026",
                     risk_level=PermissionLevel.LOW_RISK,
@@ -90,7 +102,7 @@ class AdaptiveE2EPlanner(Planner):
         error_message: str = "",
         available_tools: Optional[List[Any]] = None,
     ) -> Plan:
-        """Adaptive replanning when unexpected state (window mismatch / stale target) is encountered."""
+        """Adaptive replanning when unexpected state (stale target) is detected."""
         record = {
             "failed_step": failed_step.step_id if failed_step else None,
             "error": error_message,
@@ -98,10 +110,10 @@ class AdaptiveE2EPlanner(Planner):
         }
         self.replan_invocations.append(record)
 
-        # Generate revised plan: re-focus Notepad first, then write and verify text
+        # Generate revised plan: re-focus Notepad first, then reacquire target and verify text
         return Plan(
             goal=goal,
-            rationale="Replanned workflow to restore focus to Notepad and verify text content",
+            rationale="Replanned workflow to restore focus to Notepad, reacquire target, and verify text",
             steps=[
                 PlanStep(
                     step_id="replan_step_1",
@@ -122,7 +134,7 @@ class AdaptiveE2EPlanner(Planner):
                         "action": "set_element_text",
                         "text": "Adaptive Loop 2026",
                         "target_element": "Text editor",
-                        "hwnd": self.target_hwnd,
+                        "hwnd": self.real_notepad_hwnd,
                     },
                     expected_result="Text editor updated",
                     risk_level=PermissionLevel.LOW_RISK,
@@ -135,7 +147,7 @@ class AdaptiveE2EPlanner(Planner):
                     arguments={
                         "action": "read_element_text",
                         "target_element": "Text editor",
-                        "hwnd": self.target_hwnd,
+                        "hwnd": self.real_notepad_hwnd,
                     },
                     expected_result="Adaptive Loop 2026",
                     risk_level=PermissionLevel.LOW_RISK,
@@ -147,7 +159,7 @@ class AdaptiveE2EPlanner(Planner):
 
 def main() -> None:
     print("==================================================================")
-    print("PHASE 4: REAL-WINDOWS AUTONOMOUS ADAPTIVE CONTROL LOOP E2E")
+    print("PHASE 4: REAL-WINDOWS AUTONOMOUS ADAPTIVE CONTROL LOOP HARDENING")
     print("==================================================================")
 
     start_time = time.time()
@@ -159,52 +171,112 @@ def main() -> None:
         # -----------------------------------------------------------------
         # 1. Launch Real Desktop Application (Notepad)
         # -----------------------------------------------------------------
-        print("\n--- Step 1: Launch Notepad ---")
+        print("\n--- 1. Launch Notepad Process ---")
         notepad_proc = subprocess.Popen(["notepad.exe"])
         time.sleep(1.5)
 
-        # Focus Notepad to capture true initial HWND
+        # Focus Notepad to ensure it is in the foreground
         focus_res = comp.execute({"action": "window_focus", "text": "Notepad"})
         assert focus_res.success, f"Failed to focus Notepad: {focus_res.error}"
         notepad_hwnd = focus_res.output.get("hwnd")
-        print(f"Notepad launched successfully with HWND: {notepad_hwnd}")
-        assert notepad_hwnd and notepad_hwnd > 0, "Invalid Notepad HWND"
+        print(f"Notepad launched and focused with REAL valid HWND: {notepad_hwnd}")
+        assert notepad_hwnd and notepad_hwnd > 0, "Expected valid Notepad HWND"
 
         # -----------------------------------------------------------------
-        # 2. Capture Initial Observation
+        # 2. Capture Initial Observation & Record Genuine Target Identity
         # -----------------------------------------------------------------
-        print("\n--- Step 2: Capture Initial World State Observation ---")
+        print("\n--- 2. Observe Notepad & Obtain Genuine Target Identity ---")
         obs_init = comp.execute({"action": "observe_semantic", "ocr_mode": "off", "hwnd": notepad_hwnd})
         assert obs_init.success is True, f"Failed initial observation: {obs_init.error}"
         targets_init = obs_init.output.get("targets", [])
         print(f"Discovered {len(targets_init)} semantic targets in Notepad.")
         assert len(targets_init) > 0, "Expected semantic targets in Notepad"
 
+        target_identity = {"hwnd": notepad_hwnd, "element_name": "Text editor"}
+        print(f"Recorded Genuine Target Identity: {target_identity}")
+
         # -----------------------------------------------------------------
-        # 3. Inject Unexpected State Disruption
+        # 3. Explicit Approval Boundary Demonstration (Negative Path)
         # -----------------------------------------------------------------
-        print("\n--- Step 3: Inject State Disruption (Switch Foreground Window) ---")
+        print("\n--- 3. Approval Boundary Demonstration (Negative Path) ---")
+        reg_neg = ToolRegistry()
+        reg_neg.register(comp)
+
+        neg_plan = Plan(
+            goal="Test sensitive action rejection",
+            steps=[
+                PlanStep(
+                    step_id="neg_step_1",
+                    objective="Attempt unapproved desktop edit",
+                    tool_required="computer",
+                    arguments={
+                        "action": "set_element_text",
+                        "text": "Unapproved Text",
+                        "target_element": "Text editor",
+                        "hwnd": notepad_hwnd,
+                    },
+                    expected_result="Text editor updated",
+                    risk_level=PermissionLevel.LOW_RISK,
+                )
+            ],
+        )
+        neg_planner = MagicMock()
+        neg_planner.create_plan.return_value = neg_plan
+
+        approval_called_neg = False
+
+        def reject_callback(step: PlanStep) -> bool:
+            nonlocal approval_called_neg
+            approval_called_neg = True
+            print(f"[SECURITY CHECK -> WAITING_FOR_APPROVAL] Step '{step.step_id}' ({step.arguments.get('action')}) prompted.")
+            print("[APPROVAL DECISION]: Human supervisor explicitly REJECTED sensitive action.")
+            return False
+
+        agent_neg = Agent(
+            planner=neg_planner,
+            tool_registry=reg_neg,
+            verifier=default_verifier,
+            limits=TaskLimits(max_steps=2, max_retries_per_step=0, max_replans=0),
+            approval_callback=reject_callback,
+        )
+        state_neg = agent_neg.run("Test sensitive action rejection")
+
+        assert approval_called_neg is True, "Expected approval_callback to be invoked"
+        assert state_neg.status == TaskStateEnum.FAILED, "Expected task to fail on approval rejection"
+        assert state_neg.termination_reason == "APPROVAL_REJECTED", f"Expected APPROVAL_REJECTED, got: {state_neg.termination_reason}"
+        assert len(state_neg.approvals_requested) == 1
+        assert state_neg.approvals_requested[0]["approved"] is False
+        print("Negative Approval Boundary Evidence: PASSED (Action safely blocked with zero execution).")
+
+        # -----------------------------------------------------------------
+        # 4. Inject State Disruption (Switch Foreground Window)
+        # -----------------------------------------------------------------
+        print("\n--- 4. Inject State Disruption (Switch to Real Desktop Shell Window) ---")
         user32 = ctypes.windll.user32
         progman_hwnd = user32.FindWindowW("Progman", None)
         if progman_hwnd:
             user32.SetForegroundWindow(progman_hwnd)
-            print(f"Switched foreground window to Shell (HWND: {progman_hwnd})")
+            print(f"Switched foreground window to Shell/Progman (REAL valid HWND: {progman_hwnd})")
         else:
             user32.ShowWindow(notepad_hwnd, 6)  # SW_MINIMIZE
-            print("Minimized Notepad to simulate state disruption.")
+            print("Minimized Notepad to simulate background switch.")
         time.sleep(0.5)
 
         active_hwnd = user32.GetForegroundWindow()
-        print(f"Current active window HWND after disruption: {active_hwnd} (Notepad was {notepad_hwnd})")
+        print(f"Current active window HWND: {active_hwnd}")
+        print(f"Original Notepad target HWND: {notepad_hwnd}")
+        assert active_hwnd != notepad_hwnd, "Expected active window to be distinct from Notepad"
+        assert active_hwnd > 0, "Expected a valid active window HWND"
+        print("Distinction confirmed: Target is STALE BUT PREVIOUSLY VALID (Notepad HWND), not an invalid dummy.")
 
         # -----------------------------------------------------------------
-        # 4. Initialize Autonomous Agent with Adaptive Controller
+        # 5. Execute Autonomous Adaptive Loop with Stale Target & Positive Approval
         # -----------------------------------------------------------------
-        print("\n--- Step 4: Run Autonomous Agent Adaptive Loop ---")
-        reg = ToolRegistry()
-        reg.register(comp)
+        print("\n--- 5. Run Autonomous Adaptive Loop ---")
+        reg_main = ToolRegistry()
+        reg_main.register(comp)
 
-        planner = AdaptiveE2EPlanner(target_hwnd=notepad_hwnd, notepad_title="Notepad")
+        planner = HardenedAdaptiveE2EPlanner(real_notepad_hwnd=notepad_hwnd, notepad_title="Notepad")
         limits = TaskLimits(
             max_steps=10,
             max_retries_per_step=1,
@@ -212,15 +284,21 @@ def main() -> None:
             max_consecutive_no_progress=3,
             step_timeout_seconds=15.0,
         )
-        policy = SecurityPolicy()
+
+        approval_events: List[Dict[str, Any]] = []
+
+        def approve_callback(step: PlanStep) -> bool:
+            print(f"[SECURITY CHECK -> WAITING_FOR_APPROVAL] Step '{step.step_id}' ({step.arguments.get('action')}) prompted.")
+            print(f"[APPROVAL DECISION]: Human supervisor explicitly APPROVED step '{step.step_id}'.")
+            approval_events.append({"step_id": step.step_id, "approved": True})
+            return True
 
         agent = Agent(
             planner=planner,
-            tool_registry=reg,
+            tool_registry=reg_main,
             verifier=default_verifier,
             limits=limits,
-            security_policy=policy,
-            approval_callback=lambda step: True,
+            approval_callback=approve_callback,
         )
 
         goal = "Type 'Adaptive Loop 2026' into Notepad and verify it is present."
@@ -228,19 +306,28 @@ def main() -> None:
 
         print(f"\nExecution Finished with Status: {state.status.value}")
         print(f"Goal Verified: {state.goal_verified}")
+        print(f"Termination Reason: {state.termination_reason}")
         print(f"Replans Triggered: {state.replan_count}")
         print(f"Total Tool Calls: {state.total_tool_calls}")
 
         # Assertions on adaptive execution
         assert state.status == TaskStateEnum.COMPLETED, f"Agent failed with {state.termination_reason}: {state.errors}"
         assert state.goal_verified is True, "Goal was not verified in actual state"
-        assert state.replan_count >= 1, f"Expected replanning, got {state.replan_count}"
-        assert len(planner.replan_invocations) >= 1, "Expected at least 1 replan invocation"
+        assert state.termination_reason == "GOAL_VERIFIED"
+        assert state.replan_count >= 1, f"Expected replanning after stale target, got: {state.replan_count}"
+        assert len(planner.replan_invocations) >= 1
+        assert len(approval_events) >= 1, "Expected at least 1 approval event"
+
+        # Verify stale target error message in replan invocation record
+        stale_replan = planner.replan_invocations[0]
+        print(f"Stale Target Rejection Error in Replan: '{stale_replan['error']}'")
+        assert "Stale target safety violation" in stale_replan["error"]
+        assert str(notepad_hwnd) in stale_replan["error"]
 
         # -----------------------------------------------------------------
-        # 5. Post-Action Semantic Verification on Real Notepad
+        # 6. Post-Action State-Based Verification on Real Notepad
         # -----------------------------------------------------------------
-        print("\n--- Step 5: Verify Final Text in Live Window ---")
+        print("\n--- 6. State-Based Verification of Actual Live Content ---")
         read_res = comp.execute({
             "action": "read_element_text",
             "target_element": "Text editor",
@@ -254,7 +341,7 @@ def main() -> None:
         total_elapsed = time.time() - start_time
 
         # -----------------------------------------------------------------
-        # 6. Telemetry & Metrics Summary
+        # 7. Telemetry & Metrics Summary
         # -----------------------------------------------------------------
         print("\n==================================================================")
         print("PHASE 4 ADAPTIVE LOOP E2E TELEMETRY REPORT")
@@ -265,25 +352,40 @@ def main() -> None:
         print(f"Goal Verified:          {state.goal_verified}")
         print(f"Total Steps Planned:    {len(state.plan.steps) if state.plan else 0}")
         print(f"Total Actions Executed: {len(state.actions)}")
+        print(f"Total Observations:     {sum(1 for e in state.state_history if 'OBSERVING' in e)}")
+        print(f"Total Verifications:    {len(state.verification_records)}")
         print(f"Total Tool Calls:       {state.total_tool_calls}")
+        print(f"Retries Recorded:       {sum(state.retry_counts.values())}")
         print(f"Replans Executed:       {state.replan_count}")
-        print(f"State History Entries:  {len(state.state_history)}")
+        print(f"Approvals Requested:    {len(state.approvals_requested)}")
+        print(f"State History Count:    {len(state.state_history)}")
+        print(f"State History Trace:    {' -> '.join(state.state_history)}")
         print(f"Total Execution Time:   {total_elapsed:.2f}s")
         print("==================================================================")
 
+        assert len(state.state_history) >= 8, f"Expected >= 8 state history transitions, got {len(state.state_history)}"
+
     finally:
         # -----------------------------------------------------------------
-        # 7. Clean Up All Opened Windows and Processes
+        # 8. Clean Up All Opened Windows and Processes
         # -----------------------------------------------------------------
-        print("\n--- Step 7: Cleanup Process & Windows ---")
+        print("\n--- 8. Cleanup Process & Windows ---")
         if notepad_proc:
             try:
                 notepad_proc.terminate()
-                notepad_proc.wait(timeout=2.0)
+                notepad_proc.wait(timeout=3.0)
                 print("Terminated Notepad process cleanly.")
             except Exception:
                 subprocess.run(["taskkill", "/F", "/IM", "notepad.exe"], capture_output=True)
                 print("Force-killed Notepad process.")
+            time.sleep(1.0)
+
+        # Confirm Notepad is gone
+        win_list = [str(w).lower() for w in comp.execute({"action": "window_list"}).output.get("windows", [])]
+        notepad_remaining = any("untitled - notepad" in w for w in win_list)
+        print("Notepad remaining in window list:", notepad_remaining)
+        assert not notepad_remaining, "Expected Notepad process to be fully terminated"
+        print("Process & window cleanup: VERIFIED CLEAN.")
 
 
 if __name__ == "__main__":

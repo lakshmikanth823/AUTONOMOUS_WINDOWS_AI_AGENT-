@@ -1009,6 +1009,66 @@ class Verifier:
                     )
         return record
 
+    def verify_goal(
+        self,
+        goal: str,
+        state: Any,
+        last_observation: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str]:
+        """Verify that the final actual world state satisfies the overall user goal.
+        
+        Enforces that:
+        - tool success != goal success
+        - plan exhaustion != goal success
+        """
+        # 1. Unresolved issues or empty executions fail goal verification
+        if getattr(state, "remaining_issues", None):
+            return False, f"Unresolved issues present in task state: {state.remaining_issues}"
+        actions = getattr(state, "actions", [])
+        if not actions:
+            return False, "No actions were executed to achieve the goal."
+        plan = getattr(state, "plan", None)
+        if not plan or not plan.steps:
+            return False, "No active plan present in task state."
+        if any(s.status != "completed" for s in plan.steps):
+            return False, "One or more plan steps failed or were not completed."
+
+        # 2. Extract quoted target strings or assertions from the goal
+        import re
+        quoted = re.findall(r"['\"]([^'\"]+)['\"]", goal)
+
+        obs = last_observation or {}
+        obs_texts: List[str] = []
+        for t in obs.get("targets", []):
+            if isinstance(t, dict):
+                obs_texts.append(str(t.get("name", "")))
+                obs_texts.append(str(t.get("text", "")))
+        for el in obs.get("elements", []):
+            if isinstance(el, dict):
+                obs_texts.append(str(el.get("name", "")))
+        for word in obs.get("words", []):
+            if isinstance(word, dict):
+                obs_texts.append(str(word.get("text", "")))
+
+        for act in reversed(actions):
+            out = getattr(act, "output", {})
+            if isinstance(out, dict):
+                obs_texts.append(str(out.get("text", "")))
+                obs_texts.append(str(out.get("content", "")))
+                obs_texts.append(str(out.get("data", "")))
+
+        combined_text = " ".join(obs_texts)
+
+        # Check quoted targets
+        for q in quoted:
+            clean_q = q.strip()
+            # Ignore common command words if quoted
+            if len(clean_q) > 3 and clean_q.lower() not in ("notepad", "notepad.exe", "file", "text"):
+                if clean_q not in combined_text:
+                    return False, f"Goal target '{clean_q}' was not verified in final world state observation or readback."
+
+        return True, "Goal state verified in actual world state."
+
 
 # Global default verifier instance
 default_verifier = Verifier()

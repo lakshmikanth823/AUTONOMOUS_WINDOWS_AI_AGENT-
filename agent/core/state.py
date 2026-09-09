@@ -22,6 +22,7 @@ class TaskStateEnum(str, Enum):
     PLANNING = "PLANNING"
     WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
     EXECUTING = "EXECUTING"
+    OBSERVING = "OBSERVING"
     VERIFYING = "VERIFYING"
     RECOVERING = "RECOVERING"
     REPLANNING = "REPLANNING"
@@ -163,6 +164,7 @@ class TaskState(BaseModel):
     goal_verified: bool = False
     termination_reason: Optional[str] = None
     state_history: List[str] = Field(default_factory=list)
+    action_signatures: List[str] = Field(default_factory=list)
     total_tool_calls: int = 0
     total_tokens_used: int = 0
     start_time: float = Field(default_factory=time.perf_counter)
