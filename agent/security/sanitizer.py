@@ -80,32 +80,38 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
     if not raw_path or not raw_path.strip():
         raise ValueError("Target path cannot be empty.")
 
+    raw_clean = raw_path.strip()
+
     # 1. Reject null bytes
-    if "\x00" in raw_path:
+    if "\x00" in raw_clean:
         raise PermissionError("Path contains prohibited null byte (path injection).")
 
-    path_obj = Path(raw_path)
+    # 2. Reject UNC network paths and device paths (e.g. \\server\share, \\.\, \\?\)
+    if raw_clean.startswith(r"\\") or raw_clean.startswith("//"):
+        raise PermissionError(f"UNC network paths and device namespaces are prohibited: '{raw_clean}'.")
 
-    # 2. Check for Windows reserved device names
+    path_obj = Path(raw_clean)
+
+    # 3. Check for Windows reserved device names
     base_name = path_obj.name.lower()
     stem_name = path_obj.stem.lower()
     if base_name in WINDOWS_DEVICE_NAMES or stem_name in WINDOWS_DEVICE_NAMES:
         raise PermissionError(f"Access to Windows reserved device name '{base_name}' is blocked.")
 
-    # 3. Check for Alternate Data Streams (e.g. file.txt:hidden)
+    # 4. Check for Alternate Data Streams (e.g. file.txt:hidden)
     # Note: On Windows, drive letters like C:\ are valid, but colons after that indicate ADS
-    stripped_drive = raw_path
-    if len(raw_path) >= 2 and raw_path[1] == ":" and raw_path[0].isalpha():
-        stripped_drive = raw_path[2:]
+    stripped_drive = raw_clean
+    if len(raw_clean) >= 2 and raw_clean[1] == ":" and raw_clean[0].isalpha():
+        stripped_drive = raw_clean[2:]
 
     if ":" in stripped_drive:
         raise PermissionError("Access to NTFS Alternate Data Streams (ADS) is blocked.")
 
-    # 4. Resolve absolute canonical path
+    # 5. Resolve absolute canonical path
     resolved = path_obj.resolve()
     resolved_str = str(resolved).lower()
 
-    # 5. Check critical system directories
+    # 6. Check critical system directories
     critical_system_dirs = [
         "c:\\windows",
         "c:\\program files",
@@ -116,7 +122,7 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
         if resolved_str == crit or resolved_str.startswith(crit + "\\"):
             raise PermissionError(f"Access to protected system path '{resolved}' is blocked.")
 
-    # 6. Check sensitive user directories (SSH, AWS, Azure, GCP, SAM)
+    # 7. Check sensitive user directories (SSH, AWS, Azure, GCP, SAM)
     sensitive_markers = [
         "\\.ssh",
         "\\.aws",
@@ -129,12 +135,28 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
         if marker in resolved_str:
             raise PermissionError(f"Access to sensitive credential path '{resolved}' is blocked.")
 
-    # 7. Sandbox boundary verification if allowed_roots is specified
+    # 8. Self-modification protection (agent must not modify its own security policies or settings)
+    security_file_markers = [
+        "\\agent\\security\\",
+        "\\agent\\config\\settings.py",
+        "\\agent\\config\\permissions.py",
+        "\\audit_trail.jsonl",
+    ]
+    # If the path looks like a security module or audit trail
+    for sec_marker in security_file_markers:
+        if sec_marker in resolved_str:
+            raise PermissionError(f"Self-modification security violation: access to security file '{resolved}' is blocked.")
+
+    # 9. Component-aware sandbox boundary verification if allowed_roots is specified
     if allowed_roots:
-        in_sandbox = any(
-            str(resolved).lower().startswith(str(root.resolve()).lower())
-            for root in allowed_roots
-        )
+        resolved_parts = [p.lower() for p in resolved.parts]
+        in_sandbox = False
+        for root in allowed_roots:
+            root_parts = [p.lower() for p in root.resolve().parts]
+            if len(resolved_parts) >= len(root_parts) and resolved_parts[:len(root_parts)] == root_parts:
+                in_sandbox = True
+                break
+
         if not in_sandbox:
             raise PermissionError(
                 f"Path '{resolved}' is outside allowed sandbox boundaries: "

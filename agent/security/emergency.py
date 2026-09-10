@@ -50,6 +50,13 @@ class EmergencyStop:
         self._is_triggered = True
         self._reason = reason
 
+        # Invalidate and revoke all active/pending approvals
+        try:
+            from agent.security.approval import approval_manager
+            approval_manager.revoke_all(reason=f"Emergency stop: {reason}")
+        except Exception:
+            pass
+
         logger = get_task_logger("emergency_stop")
         logger.critical(f"EMERGENCY STOP TRIGGERED: {reason}")
 

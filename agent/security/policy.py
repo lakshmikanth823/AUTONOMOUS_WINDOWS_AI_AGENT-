@@ -12,6 +12,15 @@ from pydantic import BaseModel, Field
 
 from agent.config.permissions import PermissionLevel
 from agent.config.settings import get_settings
+from agent.security.approval import approval_manager, ApprovalStatus
+from agent.security.authorization import (
+    ActionPermission,
+    AuthorizationDecision,
+    AuthorizationRequest,
+    AuthorizationStatus,
+    resolve_action_permission,
+)
+from agent.security.emergency import emergency_stop
 from agent.security.sanitizer import (
     WINDOWS_DEVICE_NAMES,
     validate_path_safety,
@@ -105,6 +114,10 @@ class SecurityEvaluation(BaseModel):
     is_blocked: bool
     requires_human: bool
     sanitized_arguments: Dict[str, Any] = Field(default_factory=dict)
+    approval_id: Optional[str] = None
+    target_hash: Optional[str] = None
+    policy_version: Optional[str] = None
+    auth_decision: Optional[Any] = None
 
 
 # Prompt injection patterns for untrusted webpage and external data
@@ -129,14 +142,11 @@ class SecurityPolicy:
         allow_loopback: bool = False,
     ) -> None:
         settings = get_settings()
-        self.allowed_roots = allowed_roots or [
-            settings.workspace_root,
-            settings.data_dir,
-            settings.logs_dir,
-        ]
+        self.allowed_roots = allowed_roots
         self.require_approval_for_unknown_tools = require_approval_for_unknown_tools
         self.block_ssrf = block_ssrf
         self.allow_loopback = allow_loopback
+        self.policy_version = "2026.8.0"
 
     def check_prompt_injection(self, text: str) -> Tuple[bool, List[str]]:
         """Scan untrusted webpage or external text for prompt injection patterns."""
@@ -212,58 +222,91 @@ class SecurityPolicy:
 
         return True, "URL is valid."
 
-    def evaluate_action(
+    def evaluate_authorization(
         self,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        known_tool_names: Set[str],
-        llm_requested_level: Optional[PermissionLevel] = None,
-    ) -> SecurityEvaluation:
-        """Deterministically evaluate action permissions, strictly overriding LLM self-classifications."""
+        request: AuthorizationRequest,
+        known_tool_names: Optional[Set[str]] = None,
+    ) -> AuthorizationDecision:
+        """Central, host-side, fail-closed authorization engine outside the LLM."""
         settings = get_settings()
 
-        # 1. Unknown tool detection (Default: DENY unknown capabilities)
-        if tool_name not in known_tool_names:
-            return SecurityEvaluation(
-                level=PermissionLevel.BLOCKED,
-                reason=f"Tool '{tool_name}' is not in the registered tool allowlist.",
+        # 1. Emergency stop check
+        if emergency_stop.is_triggered:
+            return AuthorizationDecision(
+                decision=AuthorizationStatus.DENIED,
+                reason=f"Execution blocked: emergency stop is active ({emergency_stop.reason}).",
+                permission=request.permission,
+                risk_level=PermissionLevel.BLOCKED,
                 is_blocked=True,
-                requires_human=True,
+                policy_version=self.policy_version,
             )
 
-        sanitized_args = dict(arguments)
+        # 2. Known tool allowlist check (Fail-closed)
+        if known_tool_names is not None and request.tool_name not in known_tool_names:
+            return AuthorizationDecision(
+                decision=AuthorizationStatus.DENIED,
+                reason=f"Tool '{request.tool_name}' is not in the registered tool allowlist.",
+                permission=request.permission,
+                risk_level=PermissionLevel.BLOCKED,
+                is_blocked=True,
+                policy_version=self.policy_version,
+            )
+
+        SYSTEM_TOOLS = {"filesystem", "terminal", "application", "browser", "computer"}
+
+        # 3. Unknown or malformed capability check for system tools (Fail-closed)
+        if request.permission == ActionPermission.UNKNOWN and request.tool_name in SYSTEM_TOOLS:
+            return AuthorizationDecision(
+                decision=AuthorizationStatus.DENIED,
+                reason=f"Action '{request.action_name}' on system tool '{request.tool_name}' is unmapped or unknown (fail-closed default: DENIED).",
+                permission=request.permission,
+                risk_level=PermissionLevel.BLOCKED,
+                is_blocked=True,
+                policy_version=self.policy_version,
+            )
+
+        sanitized_args = dict(request.arguments)
         computed_level = PermissionLevel.SAFE
         reason = "Safe action"
+        is_blocked = False
+        resource_scope = request.resource_scope
+        tool_name = request.tool_name
+        action = request.action_name or str(sanitized_args.get("action", "")).strip()
 
-        # 2. FILESYSTEM TOOL EVALUATION
+        # A. FILESYSTEM
         if tool_name == "filesystem":
-            action = str(sanitized_args.get("action", "")).strip()
             raw_path = str(sanitized_args.get("path", "")).strip()
             dest = str(sanitized_args.get("destination", "")).strip()
             overwrite = bool(sanitized_args.get("overwrite", False))
 
             try:
-                # Validate path bounds and safety
                 if raw_path:
-                    validate_path_safety(raw_path, allowed_roots=None)
+                    validated_p = validate_path_safety(raw_path, allowed_roots=self.allowed_roots)
+                    resource_scope = str(validated_p)
                 if dest:
-                    validate_path_safety(dest, allowed_roots=None)
+                    validated_d = validate_path_safety(dest, allowed_roots=self.allowed_roots)
+                    resource_scope = resource_scope or str(validated_d)
             except PermissionError as pe:
-                return SecurityEvaluation(
-                    level=PermissionLevel.BLOCKED,
+                return AuthorizationDecision(
+                    decision=AuthorizationStatus.DENIED,
                     reason=f"Filesystem safety violation: {pe}",
+                    permission=request.permission,
+                    risk_level=PermissionLevel.BLOCKED,
                     is_blocked=True,
-                    requires_human=True,
+                    policy_version=self.policy_version,
+                    resource_scope=raw_path or dest,
                 )
             except Exception as e:
-                return SecurityEvaluation(
-                    level=PermissionLevel.BLOCKED,
+                return AuthorizationDecision(
+                    decision=AuthorizationStatus.DENIED,
                     reason=f"Invalid filesystem path: {e}",
+                    permission=request.permission,
+                    risk_level=PermissionLevel.BLOCKED,
                     is_blocked=True,
-                    requires_human=True,
+                    policy_version=self.policy_version,
+                    resource_scope=raw_path or dest,
                 )
 
-            # Risk classification
             target_p = Path(raw_path) if raw_path else None
             if action in ("delete_file", "delete_directory"):
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
@@ -278,18 +321,29 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.SAFE
                 reason = f"Filesystem read inspection: {action}"
 
-        # 3. TERMINAL TOOL EVALUATION
+        # B. TERMINAL
         elif tool_name == "terminal":
             command = str(sanitized_args.get("command", "")).strip()
-            perm_level = classify_command_permission(command)
+            # Self-modification protection: reject commands targeting agent security or settings
+            sec_bypass_markers = ["agent/security", "agent\\security", "permissions.py", "audit_trail.jsonl", "AGENT_REQUIRE_HUMAN_APPROVAL", "Set-ExecutionPolicy"]
+            if any(m.lower() in command.lower() for m in sec_bypass_markers):
+                return AuthorizationDecision(
+                    decision=AuthorizationStatus.DENIED,
+                    reason=f"Command attempts to modify security settings or policies: '{command}'",
+                    permission=request.permission,
+                    risk_level=PermissionLevel.BLOCKED,
+                    is_blocked=True,
+                    policy_version=self.policy_version,
+                )
 
-            # Check for command chaining and subshells
+            perm_level = classify_command_permission(command)
             chaining_chars = [";", "&&", "||", "|", "&", "\n", "`"]
             has_chaining = any(char in command for char in chaining_chars)
             has_subshell = "$(" in command
 
             if perm_level == PermissionLevel.BLOCKED:
                 computed_level = PermissionLevel.BLOCKED
+                is_blocked = True
                 reason = f"Command is permanently BLOCKED by security policy: '{command}'"
             elif has_chaining or has_subshell:
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
@@ -301,9 +355,8 @@ class SecurityPolicy:
                 computed_level = perm_level
                 reason = f"Command classified as {perm_level.value}: '{command}'"
 
-        # 4. APPLICATION TOOL EVALUATION
+        # C. APPLICATION
         elif tool_name == "application":
-            action = str(sanitized_args.get("action", "")).strip()
             command = str(sanitized_args.get("command", "")).strip()
             pid = sanitized_args.get("pid")
 
@@ -311,19 +364,31 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.SAFE
                 reason = f"Read-only application inspection: {action}"
             elif action == "app_kill":
+                if pid is None or not isinstance(pid, int) or pid <= 0:
+                    return AuthorizationDecision(
+                        decision=AuthorizationStatus.DENIED,
+                        reason=f"Process termination requires valid positive integer PID (received: {pid}).",
+                        permission=request.permission,
+                        risk_level=PermissionLevel.BLOCKED,
+                        is_blocked=True,
+                        policy_version=self.policy_version,
+                    )
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"Forceful process termination requires human approval: PID {pid}"
+                resource_scope = f"PID:{pid}"
             elif action == "app_launch":
                 perm = classify_command_permission(command)
                 standard_apps = ("notepad", "notepad.exe", "calc", "calc.exe", "msedge", "msedge.exe", "explorer", "explorer.exe")
                 cmd_stem = Path(command.split()[0]).name.lower() if command else ""
 
                 if perm == PermissionLevel.BLOCKED:
-                    return SecurityEvaluation(
-                        level=PermissionLevel.BLOCKED,
+                    return AuthorizationDecision(
+                        decision=AuthorizationStatus.DENIED,
                         reason=f"Application launch command is permanently BLOCKED: '{command}'",
+                        permission=request.permission,
+                        risk_level=PermissionLevel.BLOCKED,
                         is_blocked=True,
-                        requires_human=True,
+                        policy_version=self.policy_version,
                     )
                 elif cmd_stem in standard_apps or perm in (PermissionLevel.SAFE, PermissionLevel.LOW_RISK):
                     computed_level = PermissionLevel.LOW_RISK
@@ -341,9 +406,8 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"Unknown application action: {action}"
 
-        # 5. BROWSER TOOL EVALUATION
+        # D. BROWSER
         elif tool_name == "browser":
-            action = str(sanitized_args.get("action", "")).strip()
             url = str(sanitized_args.get("url", "")).strip()
             selector = str(sanitized_args.get("selector", "")).lower()
             target_text = str(sanitized_args.get("target_text", "")).lower()
@@ -352,36 +416,41 @@ class SecurityPolicy:
             if url:
                 valid_url, url_reason = self.evaluate_url_safety(url)
                 if not valid_url:
-                    return SecurityEvaluation(
-                        level=PermissionLevel.BLOCKED,
+                    return AuthorizationDecision(
+                        decision=AuthorizationStatus.DENIED,
                         reason=f"Browser navigation blocked: {url_reason}",
+                        permission=request.permission,
+                        risk_level=PermissionLevel.BLOCKED,
                         is_blocked=True,
-                        requires_human=True,
+                        policy_version=self.policy_version,
+                        resource_scope=url,
                     )
+                resource_scope = url
 
-            # Sensitive target detection
             sensitive_triggers = ["password", "credit_card", "cvv", "bank", "ssn", "secret_key", "api_token"]
             is_credential_target = any(trig in selector or trig in target_text for trig in sensitive_triggers)
             financial_triggers = ["purchase", "pay now", "confirm payment", "transfer money", "delete account"]
             is_financial_target = any(trig in target_text or trig in selector for trig in financial_triggers)
 
             if action == "upload":
-                # File upload to web always requires human approval
                 if path_arg:
                     try:
-                        validate_path_safety(path_arg, allowed_roots=None)
+                        validate_path_safety(path_arg, allowed_roots=self.allowed_roots)
                     except Exception as e:
-                        return SecurityEvaluation(
-                            level=PermissionLevel.BLOCKED,
+                        return AuthorizationDecision(
+                            decision=AuthorizationStatus.DENIED,
                             reason=f"Browser file upload blocked by path policy: {e}",
+                            permission=request.permission,
+                            risk_level=PermissionLevel.BLOCKED,
                             is_blocked=True,
-                            requires_human=True,
+                            policy_version=self.policy_version,
+                            resource_scope=path_arg,
                         )
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"File upload to web application requires human approval: '{path_arg}'"
+                resource_scope = path_arg
 
             elif action == "download":
-                # Executable downloads require human approval
                 executable_extensions = (".exe", ".bat", ".cmd", ".ps1", ".vbs", ".dll", ".msi", ".scr")
                 if any(path_arg.lower().endswith(ext) for ext in executable_extensions):
                     computed_level = PermissionLevel.REQUIRES_APPROVAL
@@ -389,6 +458,7 @@ class SecurityPolicy:
                 else:
                     computed_level = PermissionLevel.LOW_RISK
                     reason = "Browser download operation."
+                resource_scope = path_arg
 
             elif is_credential_target:
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
@@ -410,88 +480,132 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"Browser action requires approval: {action}"
 
-        # 5. COMPUTER TOOL EVALUATION
+        # E. COMPUTER
         elif tool_name == "computer":
-            action = str(sanitized_args.get("action", "")).strip()
             known_computer_actions = {
-                "observe",
-                "screenshot",
-                "window_list",
-                "mouse_move",
-                "mouse_click",
-                "double_click",
-                "right_click",
-                "mouse_scroll",
-                "window_focus",
-                "keyboard_input",
-                "type_text",
-                "press_key",
-                "hotkey",
-                "read_window_text",
-                "region_screenshot",
-                "write_clipboard",
-                "mouse_drag",
-                "window_details",
-                "ui_elements",
-                "ui_tree",
-                "set_element_text",
-                "read_element_text",
-                "ocr_screen",
-                "ocr_region",
-                "observe_semantic",
+                "observe", "screenshot", "window_list", "mouse_move", "mouse_click",
+                "double_click", "right_click", "mouse_scroll", "window_focus",
+                "keyboard_input", "type_text", "press_key", "hotkey", "read_window_text",
+                "region_screenshot", "write_clipboard", "mouse_drag", "window_details",
+                "ui_elements", "ui_tree", "set_element_text", "read_element_text",
+                "ocr_screen", "ocr_region", "observe_semantic",
             }
             if action not in known_computer_actions:
-                return SecurityEvaluation(
-                    level=PermissionLevel.BLOCKED,
+                return AuthorizationDecision(
+                    decision=AuthorizationStatus.DENIED,
                     reason=f"Computer action '{action}' is not recognized or permitted.",
+                    permission=request.permission,
+                    risk_level=PermissionLevel.BLOCKED,
                     is_blocked=True,
-                    requires_human=True,
+                    policy_version=self.policy_version,
                 )
 
             if action in ("keyboard_input", "type_text", "press_key", "hotkey", "set_element_text"):
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"Setting text or sending keyboard input/keys ('{action}') to Windows desktop requires explicit approval."
-            elif action in ("mouse_click", "double_click", "right_click", "mouse_scroll", "window_focus"):
-                computed_level = PermissionLevel.LOW_RISK
-                reason = f"Desktop UI interaction: {action}"
-            elif action in ("observe", "screenshot", "window_list", "mouse_move", "ui_elements", "ui_tree", "read_element_text", "ocr_screen", "ocr_region", "observe_semantic"):
-                computed_level = PermissionLevel.SAFE
-                reason = f"Desktop observation/cursor positioning: {action}"
-            elif action in ("read_window_text", "region_screenshot", "write_clipboard", "window_details"):
-                computed_level = PermissionLevel.SAFE
-                reason = f"Desktop observation/action: {action}"
-            elif action == "mouse_drag":
+            elif action in ("mouse_click", "double_click", "right_click", "mouse_scroll", "window_focus", "mouse_drag"):
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Desktop UI interaction: {action}"
             else:
-                computed_level = PermissionLevel.LOW_RISK
-                reason = f"Desktop interaction: {action}"
+                computed_level = PermissionLevel.SAFE
+                reason = f"Desktop observation/action: {action}"
 
-        # 7. DEFAULT / OTHER REGISTERED TOOLS (e.g. echo, mocks)
-        else:
+        # F. REGISTERED NON-SYSTEM TOOLS (e.g. workspace, echo, mock_tool)
+        elif tool_name not in SYSTEM_TOOLS:
             computed_level = PermissionLevel.SAFE
-            reason = f"Standard tool: {tool_name}"
+            reason = f"Registered tool: {tool_name}"
 
-        # DEFENSE-IN-DEPTH: LLM CANNOT DOWNGRADE A RISK LEVEL!
-        # If the LLM requested a higher level (e.g. LLM said REQUIRES_APPROVAL), we honor the stricter level.
-        # If the LLM claimed SAFE for a destructive command, deterministic policy overrides it!
-        final_level = computed_level
-        if llm_requested_level is not None and llm_requested_level > computed_level:
+        # G. FAIL-CLOSED DEFAULT FOR ANY UNKNOWN SYSTEM ACTION
+        else:
+            return AuthorizationDecision(
+                decision=AuthorizationStatus.DENIED,
+                reason=f"Action '{action}' on system tool '{tool_name}' denied by fail-closed policy.",
+                permission=request.permission,
+                risk_level=PermissionLevel.BLOCKED,
+                is_blocked=True,
+                policy_version=self.policy_version,
+            )
+
+        is_blocked = (computed_level == PermissionLevel.BLOCKED)
+        requires_human = is_blocked or (
+            computed_level.severity > settings.auto_approve_max_level.severity
+            and settings.require_human_approval
+        )
+
+        target_hash = request.compute_target_hash()
+        approval_id = None
+        if is_blocked:
+            decision_status = AuthorizationStatus.DENIED
+        elif requires_human:
+            decision_status = AuthorizationStatus.REQUIRES_APPROVAL
+            app_req = approval_manager.create_request(
+                action=action,
+                permission=request.permission,
+                resource=resource_scope or request.tool_name,
+                target_hash=target_hash,
+                target_metadata=request.target_metadata or dict(request.arguments),
+                risk_level=computed_level,
+                reason=reason,
+                task_id=request.task_id,
+                subgoal_id=request.subgoal_id,
+                policy_version=self.policy_version,
+            )
+            approval_id = app_req.approval_id
+        else:
+            decision_status = AuthorizationStatus.ALLOWED
+
+        return AuthorizationDecision(
+            decision=decision_status,
+            reason=reason,
+            permission=request.permission,
+            risk_level=computed_level,
+            resource_scope=resource_scope,
+            policy_version=self.policy_version,
+            approval_id=approval_id,
+            requires_human=requires_human,
+            is_blocked=is_blocked,
+            target_hash=target_hash,
+            sanitized_arguments=sanitized_args,
+        )
+
+    def evaluate_action(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        known_tool_names: Set[str],
+        llm_requested_level: Optional[PermissionLevel] = None,
+    ) -> SecurityEvaluation:
+        """Deterministically evaluate action permissions, strictly overriding LLM self-classifications."""
+        perm = resolve_action_permission(tool_name, arguments)
+        req = AuthorizationRequest(
+            tool_name=tool_name,
+            action_name=str(arguments.get("action", "")),
+            arguments=arguments,
+            permission=perm,
+            policy_version=self.policy_version,
+        )
+        decision = self.evaluate_authorization(req, known_tool_names=known_tool_names)
+
+        # Defense-in-depth: LLM cannot downgrade a risk level
+        final_level = decision.risk_level
+        reason = decision.reason
+        if llm_requested_level is not None and llm_requested_level > final_level:
             final_level = llm_requested_level
             reason += f" (Upgraded by requested level {llm_requested_level.value})"
 
-        is_blocked = (final_level == PermissionLevel.BLOCKED)
-        requires_human = is_blocked or (
-            final_level.severity > settings.auto_approve_max_level.severity
-            and settings.require_human_approval
-        )
+        is_blocked = (decision.decision == AuthorizationStatus.DENIED) or (final_level == PermissionLevel.BLOCKED)
+        requires_human = decision.requires_human or is_blocked
 
         return SecurityEvaluation(
             level=final_level,
             reason=reason,
             is_blocked=is_blocked,
             requires_human=requires_human,
-            sanitized_arguments=sanitized_args,
+            sanitized_arguments=decision.sanitized_arguments,
+            approval_id=decision.approval_id,
+            target_hash=decision.target_hash,
+            policy_version=self.policy_version,
+            auth_decision=decision,
         )
 
 

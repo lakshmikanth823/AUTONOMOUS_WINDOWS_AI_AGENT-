@@ -36,6 +36,9 @@ from agent.exceptions import (
     ToolError,
 )
 from agent.logger import get_task_logger
+from agent.security.approval import approval_manager
+from agent.security.emergency import emergency_stop
+from agent.security.redactor import SecretRedactor
 from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry, registry as default_registry
 
@@ -94,7 +97,7 @@ class Agent:
         state.mark_updated()
         entry = new_status.value
         if detail:
-            entry = f"{new_status.value}:{detail}"
+            entry = f"{new_status.value}:{SecretRedactor.redact_text(detail)}"
         state.state_history.append(entry)
 
     def _verify_goal_in_final_state(self, state: TaskState) -> bool:
@@ -427,10 +430,26 @@ class Agent:
             step.risk_level = sec_eval.level
             effective_args = sec_eval.sanitized_arguments
 
+            # Dedicated authorization audit logging
+            if hasattr(self.audit_logger, "log_authorization") and sec_eval.auth_decision:
+                ad = sec_eval.auth_decision
+                perm_val = ad.permission.value if hasattr(ad.permission, "value") else str(ad.permission)
+                stat_val = ad.decision.value if hasattr(ad.decision, "value") else str(ad.decision)
+                self.audit_logger.log_authorization(
+                    task_id=state.task_id,
+                    action_permission=perm_val,
+                    tool_name=step.tool_required,
+                    arguments=step.arguments,
+                    status=stat_val,
+                    reason=ad.reason,
+                    policy_version=ad.policy_version,
+                    approval_id=ad.approval_id,
+                )
+
             if sec_eval.is_blocked:
                 err_msg = f"Step '{step.step_id}' is permanently BLOCKED by security policy."
-                state.errors.append(err_msg)
-                state.remaining_issues.append(err_msg)
+                state.errors.append(SecretRedactor.redact_text(err_msg))
+                state.remaining_issues.append(SecretRedactor.redact_text(err_msg))
                 state.termination_reason = "SECURITY_BLOCKED"
                 self._transition_to(state, TaskStateEnum.FAILED, "SECURITY_BLOCKED")
                 self.audit_logger.log_action(
@@ -459,18 +478,22 @@ class Agent:
                 if self.approval_callback:
                     approved = self.approval_callback(step)
 
+                if sec_eval.approval_id:
+                    approval_manager.record_decision(sec_eval.approval_id, approved)
+
                 state.approvals_requested.append({
                     "step_id": step.step_id,
                     "action": step.tool_required,
                     "risk_level": step.risk_level.value,
                     "approved": approved,
                     "reason": sec_eval.reason,
+                    "approval_id": sec_eval.approval_id,
                 })
 
                 if not approved:
                     err_msg = f"Step '{step.step_id}' required human approval but was rejected: ACTION_NOT_EXECUTED."
-                    state.errors.append(err_msg)
-                    state.remaining_issues.append(err_msg)
+                    state.errors.append(SecretRedactor.redact_text(err_msg))
+                    state.remaining_issues.append(SecretRedactor.redact_text(err_msg))
                     state.termination_reason = "APPROVAL_REJECTED"
                     self._transition_to(state, TaskStateEnum.FAILED, "APPROVAL_REJECTED:ACTION_NOT_EXECUTED")
                     self.audit_logger.log_action(
@@ -482,8 +505,59 @@ class Agent:
                         approved=False,
                         success=False,
                         error="APPROVAL_REJECTED: Action not executed by supervisor choice",
+                        approval_id=sec_eval.approval_id,
                     )
                     break
+
+                # TOCTOU Pre-Execution Revalidation: verify live target matches approved fingerprint
+                if sec_eval.approval_id:
+                    live_target: Dict[str, Any] = {}
+                    if step.tool_required in ("computer", "application"):
+                        try:
+                            comp_tool = self.registry.get("computer")
+                            if comp_tool and hasattr(comp_tool, "_get_active_window_info"):
+                                win_info = comp_tool._get_active_window_info()
+                                live_hwnd = win_info.get("hwnd", 0)
+                            else:
+                                import ctypes
+                                live_hwnd = ctypes.windll.user32.GetForegroundWindow()
+                            if live_hwnd:
+                                live_target["hwnd"] = live_hwnd
+                        except Exception:
+                            pass
+                    if "pid" in effective_args:
+                        live_target["pid"] = effective_args["pid"]
+                    if "url" in effective_args:
+                        live_target["url"] = effective_args["url"]
+                    if "path" in effective_args:
+                        live_target["path"] = effective_args["path"]
+                    if "target_element" in effective_args:
+                        live_target["target_element"] = effective_args["target_element"]
+
+                    pol_ver = getattr(self.security_policy, "policy_version", "2026.8.0")
+                    reval_ok, reval_reason = approval_manager.revalidate_target(
+                        approval_id=sec_eval.approval_id,
+                        live_target_state=live_target,
+                        current_policy_version=pol_ver,
+                    )
+                    if not reval_ok:
+                        err_msg = f"Step '{step.step_id}' failed TOCTOU validation: {reval_reason}"
+                        state.errors.append(SecretRedactor.redact_text(err_msg))
+                        state.remaining_issues.append(SecretRedactor.redact_text(err_msg))
+                        state.termination_reason = "TOCTOU_INVALIDATED"
+                        self._transition_to(state, TaskStateEnum.FAILED, "DENIED:TOCTOU_INVALIDATED")
+                        self.audit_logger.log_action(
+                            task_id=state.task_id,
+                            action_id=f"act_toctou_{step.step_id}",
+                            tool_name=step.tool_required,
+                            arguments=step.arguments,
+                            permission_level=sec_eval.level.value,
+                            approved=True,
+                            success=False,
+                            error=f"TOCTOU_INVALIDATED: {reval_reason}",
+                            approval_id=sec_eval.approval_id,
+                        )
+                        break
 
             # EXECUTION & VERIFICATION & RECOVERY
             step_success = False
@@ -491,6 +565,16 @@ class Agent:
             recovery_decision = None
 
             while retries <= self.limits.max_retries_per_step and not step_success:
+                # Emergency stop check right before execution & on retries
+                if emergency_stop.is_triggered:
+                    err_msg = f"Task aborted: emergency stop is active ({emergency_stop.reason})"
+                    state.errors.append(SecretRedactor.redact_text(err_msg))
+                    state.remaining_issues.append(SecretRedactor.redact_text(err_msg))
+                    state.termination_reason = "EMERGENCY_STOP"
+                    self._transition_to(state, TaskStateEnum.CANCELLED, "EMERGENCY_STOP")
+                    logger.critical(err_msg)
+                    break
+
                 # 4. EXECUTION
                 self._transition_to(state, TaskStateEnum.EXECUTING, step.step_id)
                 state.tools_used.add(step.tool_required)
@@ -646,9 +730,10 @@ class Agent:
                     try:
                         import ctypes
                         curr_fg = ctypes.windll.user32.GetForegroundWindow()
-                        if not curr_fg:
+                        comp_tool = self.registry.get("computer")
+                        if not curr_fg or not ctypes.windll.user32.IsWindow(curr_fg) or not ctypes.windll.user32.IsWindowVisible(curr_fg):
                             try:
-                                curr_fg = self.registry.get("computer")._get_active_window_info().get("hwnd", 0)
+                                curr_fg = comp_tool._get_active_window_info().get("hwnd", 0) if comp_tool else 0
                             except Exception:
                                 curr_fg = 0
                         if int(expected_hwnd) != curr_fg:
@@ -780,6 +865,7 @@ class Agent:
                     approved=True if requires_human else None,
                     success=is_verified,
                     error=tool_result.error if not is_verified else None,
+                    approval_id=sec_eval.approval_id,
                 )
 
                 if is_verified:
@@ -912,6 +998,8 @@ class Agent:
                     except Exception as e:
                         logger.warning(f"Replanning attempt failed: {e}")
 
+                if state.status == TaskStateEnum.CANCELLED or emergency_stop.is_triggered:
+                    break
                 state.remaining_issues.append(f"Step '{step.step_id}' failed all execution attempts.")
                 if not state.termination_reason:
                     state.termination_reason = "STEP_FAILED"

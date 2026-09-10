@@ -384,7 +384,7 @@ class ComputerTool(Tool):
                 expected_hwnd = args.get("expected_hwnd")
                 if expected_hwnd is not None:
                     curr_hwnd = self.user32.GetForegroundWindow()
-                    if not curr_hwnd:
+                    if not curr_hwnd or not self.user32.IsWindow(curr_hwnd) or not self.user32.IsWindowVisible(curr_hwnd):
                         curr_hwnd = self._get_active_window_info().get("hwnd", 0)
                     if int(expected_hwnd) != curr_hwnd:
                         return ToolResult(
