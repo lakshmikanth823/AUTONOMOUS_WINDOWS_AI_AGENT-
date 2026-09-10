@@ -114,6 +114,12 @@ class Agent:
         if any(s.status != "completed" for s in state.plan.steps):
             return False
 
+        # If HierarchicalPlan, all subgoals must also have completed successfully
+        if hasattr(state.plan, "subgoals") and state.plan.subgoals:
+            from agent.planning.models import SubgoalStatus
+            if any(sg.status != SubgoalStatus.COMPLETED for sg in state.plan.subgoals):
+                return False
+
         # 3. Query verifier.verify_goal()
         if hasattr(self.verifier, "verify_goal"):
             try:
@@ -351,6 +357,62 @@ class Agent:
                 self._transition_to(state, TaskStateEnum.FAILED, "RATE_LIMIT_EXCEEDED")
                 logger.error(err_msg)
                 break
+
+            # 2.5 HIERARCHICAL SUBGOAL & PRECONDITION EVALUATION
+            if hasattr(plan, "subgoals") and plan.subgoals:
+                from agent.planning.models import SubgoalStatus
+                from agent.planning.preconditions import PreconditionEvaluator
+
+                cur_sg = None
+                for sg in plan.subgoals:
+                    if any(st.step_id == step.step_id for st in sg.candidate_steps):
+                        cur_sg = sg
+                        break
+
+                if cur_sg:
+                    # Check that all dependencies of this subgoal are COMPLETED
+                    deps_satisfied = True
+                    for dep_id in cur_sg.dependencies:
+                        dep_sg = plan.get_subgoal(dep_id)
+                        if not dep_sg or dep_sg.status != SubgoalStatus.COMPLETED:
+                            deps_satisfied = False
+                            break
+
+                    if not deps_satisfied:
+                        cur_sg.status = SubgoalStatus.BLOCKED
+                        err_msg = f"Subgoal '{cur_sg.subgoal_id}' blocked: prerequisite dependencies not met."
+                        state.errors.append(err_msg)
+                        state.remaining_issues.append(err_msg)
+                        state.termination_reason = "DEPENDENCY_BLOCKED"
+                        self._transition_to(state, TaskStateEnum.FAILED, "DEPENDENCY_BLOCKED")
+                        break
+
+                    # Check observable preconditions if present
+                    if cur_sg.preconditions:
+                        if not state.last_observation:
+                            try:
+                                comp_tool = self.registry.get("computer")
+                                if comp_tool:
+                                    obs_res = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
+                                    if obs_res.success:
+                                        state.last_observation = obs_res.output
+                            except Exception:
+                                pass
+
+                        precs_ok, prec_reasons = PreconditionEvaluator.evaluate_all(
+                            cur_sg.preconditions,
+                            state.last_observation or {},
+                        )
+                        if not precs_ok:
+                            cur_sg.status = SubgoalStatus.FAILED
+                            err_msg = f"Precondition failed for subgoal '{cur_sg.subgoal_id}': {'; '.join(prec_reasons)}"
+                            state.errors.append(err_msg)
+                            state.remaining_issues.append(err_msg)
+                            state.termination_reason = "PRECONDITION_FAILED"
+                            self._transition_to(state, TaskStateEnum.FAILED, "PRECONDITION_FAILED")
+                            break
+
+                    cur_sg.status = SubgoalStatus.RUNNING
 
             # 3. DETERMINISTIC RISK ANALYSIS & SECURITY POLICY (OUTSIDE THE LLM)
             known_tools = {t.name for t in self.registry.list_tools()}
@@ -726,6 +788,16 @@ class Agent:
                     state.consecutive_no_progress_count = 0
                     state.last_successful_state = state.last_observation
                     logger.info(f"FSM State [VERIFIED]: Step {step.step_id} passed verification.")
+
+                    # If HierarchicalPlan, update status of owning subgoal
+                    if hasattr(state.plan, "subgoals") and state.plan.subgoals:
+                        from agent.planning.models import SubgoalStatus
+                        for sg in state.plan.subgoals:
+                            if any(st.step_id == step.step_id for st in sg.candidate_steps):
+                                if all(st.status == "completed" for st in sg.candidate_steps):
+                                    sg.status = SubgoalStatus.COMPLETED
+                                    logger.info(f"Hierarchical subgoal [{sg.subgoal_id}] marked COMPLETED.")
+                                break
                     break
 
                 # 6. RECOVERY

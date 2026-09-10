@@ -163,6 +163,7 @@ class ComputerTool(Tool):
         self.uia = UIAClient()
         self.ocr = WindowsNativeOCR()
         self.perception = PerceptionEngine(self.uia, self.ocr)
+        self._last_focused_hwnd: Optional[int] = None
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
@@ -199,9 +200,16 @@ class ComputerTool(Tool):
 
     def _get_active_window_info(self) -> Dict[str, Any]:
         """Extract active window title, hwnd, process id, exe name, and bounding rect."""
-        hwnd = self.user32.GetForegroundWindow()
+        hwnd = None
+        # Prefer the window explicitly focused by the agent if still valid and visible
+        if getattr(self, "_last_focused_hwnd", None):
+            if self.user32.IsWindow(self._last_focused_hwnd) and self.user32.IsWindowVisible(self._last_focused_hwnd):
+                hwnd = self._last_focused_hwnd
 
-        # If console or background worker has no direct foreground window, fall back to top visible in Z-order
+        if not hwnd:
+            hwnd = self.user32.GetForegroundWindow()
+
+        # Fall back to top visible in Z-order
         if not hwnd:
             WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
             top_candidates: List[int] = []
@@ -282,15 +290,41 @@ class ComputerTool(Tool):
             cur_thread = self.kernel32.GetCurrentThreadId()
             fg_hwnd = self.user32.GetForegroundWindow()
             fg_thread = self.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+            target_thread = self.user32.GetWindowThreadProcessId(hwnd, None) if hwnd else 0
 
             if fg_thread and fg_thread != cur_thread:
                 self.user32.AttachThreadInput(cur_thread, fg_thread, True)
+            if target_thread and target_thread != cur_thread:
+                self.user32.AttachThreadInput(cur_thread, target_thread, True)
 
+            self._last_focused_hwnd = int(hwnd)
             # SW_RESTORE = 9
             self.user32.ShowWindow(hwnd, 9)
-            self.user32.BringWindowToTop(hwnd)
-            success = bool(self.user32.SetForegroundWindow(hwnd))
 
+            # Force window to top of Z-order using SetWindowPos topmost toggle
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_SHOWWINDOW = 0x0040
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            self.user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+            self.user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW)
+            self.user32.BringWindowToTop(hwnd)
+
+            try:
+                self.user32.SwitchToThisWindow(hwnd, True)
+            except Exception:
+                pass
+
+            success = bool(self.user32.SetForegroundWindow(hwnd))
+            for _ in range(10):
+                if self.user32.GetForegroundWindow() == hwnd:
+                    success = True
+                    break
+                time.sleep(0.05)
+
+            if target_thread and target_thread != cur_thread:
+                self.user32.AttachThreadInput(cur_thread, target_thread, False)
             if fg_thread and fg_thread != cur_thread:
                 self.user32.AttachThreadInput(cur_thread, fg_thread, False)
 
@@ -298,7 +332,12 @@ class ComputerTool(Tool):
         except Exception:
             try:
                 self.user32.ShowWindow(hwnd, 9)
-                return bool(self.user32.SetForegroundWindow(hwnd))
+                self.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+                self.user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+                self.user32.BringWindowToTop(hwnd)
+                success = bool(self.user32.SetForegroundWindow(hwnd))
+                time.sleep(0.1)
+                return success
             except Exception:
                 return False
 
