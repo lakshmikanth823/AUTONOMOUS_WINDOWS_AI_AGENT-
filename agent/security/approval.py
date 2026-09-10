@@ -166,8 +166,8 @@ class ApprovalManager:
                 return False, f"Policy version mismatch: approved under {req.policy_version}, active is {current_policy_version}."
 
             # Specific individual target checks against live environment
-            exp_hwnd = req.target_metadata.get("hwnd") or req.target_metadata.get("expected_hwnd")
-            curr_hwnd = live_target_state.get("hwnd") or live_target_state.get("expected_hwnd")
+            exp_hwnd = req.target_metadata.get("hwnd") if req.target_metadata.get("hwnd") is not None else req.target_metadata.get("expected_hwnd")
+            curr_hwnd = live_target_state.get("hwnd") if live_target_state.get("hwnd") is not None else live_target_state.get("expected_hwnd")
             if exp_hwnd is not None and curr_hwnd is not None and int(exp_hwnd) != int(curr_hwnd):
                 req.status = ApprovalStatus.TOCTOU_INVALIDATED
                 return False, f"TOCTOU Violation: Window HWND mutated from {exp_hwnd} to {curr_hwnd}."

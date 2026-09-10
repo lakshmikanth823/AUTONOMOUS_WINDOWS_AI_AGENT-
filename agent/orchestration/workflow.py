@@ -235,12 +235,13 @@ class PersonalWorkflowOrchestrator:
         initial_step_outputs: Optional[Dict[str, Any]] = None,
     ) -> TaskState:
         """Execute a cross-application workflow with dynamic argument resolution and focus synchronization."""
+        import copy
         if isinstance(workflow_or_plan, Workflow):
-            plan = workflow_or_plan.plan
+            plan = copy.deepcopy(workflow_or_plan.plan)
             variables = dict(workflow_or_plan.initial_variables)
             variables.update(initial_variables or {})
         else:
-            plan = workflow_or_plan
+            plan = copy.deepcopy(workflow_or_plan)
             variables = dict(initial_variables or {})
 
         if validate:

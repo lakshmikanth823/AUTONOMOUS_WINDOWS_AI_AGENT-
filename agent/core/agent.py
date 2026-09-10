@@ -571,7 +571,7 @@ class Agent:
                             else:
                                 import ctypes
                                 live_hwnd = ctypes.windll.user32.GetForegroundWindow()
-                            if live_hwnd:
+                            if live_hwnd is not None:
                                 live_target["hwnd"] = live_hwnd
                         except Exception:
                             pass

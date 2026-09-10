@@ -201,13 +201,19 @@ class ComputerTool(Tool):
     def _get_active_window_info(self) -> Dict[str, Any]:
         """Extract active window title, hwnd, process id, exe name, and bounding rect."""
         hwnd = None
-        # Prefer the window explicitly focused by the agent if still valid and visible
+        # Prefer the window explicitly focused by the agent if still valid, visible, and not minimized
         if getattr(self, "_last_focused_hwnd", None):
-            if self.user32.IsWindow(self._last_focused_hwnd) and self.user32.IsWindowVisible(self._last_focused_hwnd):
+            if (
+                self.user32.IsWindow(self._last_focused_hwnd)
+                and self.user32.IsWindowVisible(self._last_focused_hwnd)
+                and not self.user32.IsIconic(self._last_focused_hwnd)
+            ):
                 hwnd = self._last_focused_hwnd
 
         if not hwnd:
-            hwnd = self.user32.GetForegroundWindow()
+            fg = self.user32.GetForegroundWindow()
+            if fg and not self.user32.IsIconic(fg):
+                hwnd = fg
 
         # Fall back to top visible in Z-order
         if not hwnd:
@@ -215,7 +221,7 @@ class ComputerTool(Tool):
             top_candidates: List[int] = []
 
             def enum_top(h: wintypes.HWND, lparam: wintypes.LPARAM) -> bool:
-                if self.user32.IsWindowVisible(h):
+                if self.user32.IsWindowVisible(h) and not self.user32.IsIconic(h):
                     length = self.user32.GetWindowTextLengthW(h)
                     if length > 0:
                         buff = ctypes.create_unicode_buffer(length + 1)

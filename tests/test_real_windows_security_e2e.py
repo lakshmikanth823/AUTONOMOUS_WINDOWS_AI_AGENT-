@@ -199,11 +199,10 @@ def main(tmp_path=None):
             # Disrupt active desktop window focus
             import ctypes
             user32 = ctypes.windll.user32
+            user32.ShowWindow(notepad_hwnd, 6)  # SW_MINIMIZE
             progman_hwnd = user32.FindWindowW("Progman", None)
             if progman_hwnd:
                 user32.SetForegroundWindow(progman_hwnd)
-            else:
-                user32.ShowWindow(notepad_hwnd, 6)  # SW_MINIMIZE
             time.sleep(0.5)
 
             # Clear cached _last_focused_hwnd on comp_tool to reflect external mutation
@@ -315,6 +314,11 @@ def main(tmp_path=None):
 
     finally:
         kill_process(notepad_proc)
+
+
+def test_real_windows_security_e2e(tmp_path):
+    """Pytest entrypoint for the real Windows security E2E test."""
+    main(tmp_path)
 
 
 if __name__ == "__main__":

@@ -76,15 +76,15 @@ class ApplicationTool(Tool):
         self.kernel32 = ctypes.windll.kernel32
 
     def _attach_interactive_desktop(self) -> Optional[int]:
-        """Attach thread to interactive desktop if needed (only if thread lacks one)."""
+        """Attach thread to interactive desktop if needed."""
         try:
-            cur_desk = self.user32.GetThreadDesktop(self.kernel32.GetCurrentThreadId())
-            if cur_desk:
-                return None
-            hdesk = self.user32.OpenDesktopW("default", 0, False, 0x01FF)
+            hdesk = self.user32.OpenInputDesktop(0, False, 0x01FF)
+            if not hdesk:
+                hdesk = self.user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
+                orig_desk = self.user32.GetThreadDesktop(self.kernel32.GetCurrentThreadId())
                 if self.user32.SetThreadDesktop(hdesk):
-                    return hdesk
+                    return orig_desk
                 else:
                     self.user32.CloseDesktop(hdesk)
         except Exception:
@@ -92,7 +92,11 @@ class ApplicationTool(Tool):
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        pass
+        if hdesk:
+            try:
+                self.user32.SetThreadDesktop(hdesk)
+            except Exception:
+                pass
 
     def _is_window_visible(self, hwnd: int) -> bool:
         return bool(self.user32.IsWindowVisible(hwnd))
@@ -352,9 +356,11 @@ class ApplicationTool(Tool):
             self.user32.SetForegroundWindow(h)
 
             success = False
+            last_fg = 0
             for _ in range(15):
                 fg = self._get_foreground_hwnd()
-                if fg == h:
+                last_fg = fg
+                if fg == h or (fg and (self.user32.GetAncestor(fg, 2) == h or self.user32.GetAncestor(h, 2) == fg)):
                     success = True
                     break
                 time.sleep(0.05)
@@ -371,8 +377,6 @@ class ApplicationTool(Tool):
                     pass
             self._detach_interactive_desktop(hdesk)
 
-        fg = self._get_foreground_hwnd()
-        success = (fg == h)
         return ToolResult(
             success=success,
             output={
@@ -381,7 +385,7 @@ class ApplicationTool(Tool):
                 "title": target["title"],
                 "is_foreground": success,
             },
-            error=None if success else f"Window {h} could not be set as foreground (active: {fg}).",
+            error=None if success else f"Window {h} could not be set as foreground (active: {last_fg}).",
         )
 
     def minimize(self, hwnd: Optional[int] = None, title: Optional[str] = None, pid: Optional[int] = None) -> ToolResult:

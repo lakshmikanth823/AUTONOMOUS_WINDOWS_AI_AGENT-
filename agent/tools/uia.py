@@ -145,13 +145,13 @@ class UIAClient:
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         try:
-            cur_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
-            if cur_desk:
-                return None
-            hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
+            hdesk = user32.OpenInputDesktop(0, False, 0x01FF)
+            if not hdesk:
+                hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
+                orig_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
                 if user32.SetThreadDesktop(hdesk):
-                    return hdesk
+                    return orig_desk
                 else:
                     user32.CloseDesktop(hdesk)
         except Exception:
@@ -159,7 +159,11 @@ class UIAClient:
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        pass
+        if hdesk:
+            try:
+                user32.SetThreadDesktop(hdesk)
+            except Exception:
+                pass
 
     def _get_uia_instance(self) -> Optional[c_void_p]:
         """Instantiate CUIAutomation and return interface pointer."""
@@ -233,6 +237,13 @@ class UIAClient:
             return True
 
         user32.EnumWindows(WNDENUMPROC(enum_win), 0)
+        if not top_hwnd:
+            hdesk = user32.OpenInputDesktop(0, False, 0x01FF) or user32.OpenDesktopW("default", 0, False, 0x01FF)
+            if hdesk:
+                try:
+                    user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_win), 0)
+                finally:
+                    user32.CloseDesktop(hdesk)
         return top_hwnd
 
     def _extract_element_text(self, vtbl_child: Any, p_child: c_void_p) -> str:
