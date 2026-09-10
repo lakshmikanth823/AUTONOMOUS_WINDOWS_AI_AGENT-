@@ -168,21 +168,21 @@ class ComputerTool(Tool):
     def _attach_interactive_desktop(self) -> Optional[int]:
         """Attach current thread to the default interactive desktop station."""
         try:
+            cur_desk = self.user32.GetThreadDesktop(self.kernel32.GetCurrentThreadId())
+            if cur_desk:
+                return None
             hdesk = self.user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
-                self.user32.SetThreadDesktop(hdesk)
-                return hdesk
+                if self.user32.SetThreadDesktop(hdesk):
+                    return hdesk
+                else:
+                    self.user32.CloseDesktop(hdesk)
         except Exception:
             pass
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        """Close opened desktop handle."""
-        if hdesk:
-            try:
-                self.user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
+        pass
 
     def get_screen_resolution(self) -> Tuple[int, int]:
         """Return (width, height) of primary screen in pixels."""
@@ -851,9 +851,21 @@ class ComputerTool(Tool):
                     hwnd=target_hwnd,
                 )
                 if not success:
+                    # Fallback for modern Windows controls that do not support ValuePattern (e.g. Windows 11 RichEdit/Notepad)
+                    if target_hwnd:
+                        try:
+                            self._bring_window_to_foreground(target_hwnd)
+                        except Exception:
+                            pass
+                    type_res = self.execute({"action": "type_text", "text": str(text), "expected_hwnd": target_hwnd})
+                    if type_res.success:
+                        return ToolResult(
+                            success=True,
+                            output={"element": target_query, "text": str(text), "set": True, "fallback": "type_text"},
+                        )
                     return ToolResult(
                         success=False,
-                        error=f"Failed to set text on element '{target_query}' (control not found or does not support ValuePattern).",
+                        error=f"Failed to set text on element '{target_query}' (control not found or does not support ValuePattern: {type_res.error}).",
                     )
                 return ToolResult(
                     success=True,

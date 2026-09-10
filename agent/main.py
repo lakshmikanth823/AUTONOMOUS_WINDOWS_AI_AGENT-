@@ -16,6 +16,9 @@ from agent.llm.provider import get_llm_provider
 from agent.logger import get_task_logger, init_logger
 from agent.memory import MemoryCategory, default_memory_manager
 from agent.tools.registry import registry
+from agent.conversation.session import ConversationSession, UserInteractionStatus
+from agent.orchestration.workflow import PersonalWorkflowOrchestrator
+from agent.security.emergency import emergency_stop
 from agent.ui.cli import (
     console,
     print_banner,
@@ -142,15 +145,21 @@ def cmd_task(goal: str) -> Any:
 
 
 def cmd_start() -> int:
-    """Launch interactive session shell."""
+    """Launch interactive session shell with multi-turn conversational goal refinement."""
     print_banner()
     settings = get_settings()
     init_logger()
     logger = get_task_logger("interactive_session")
     logger.info("Interactive agent session started.")
 
+    provider = get_llm_provider(settings)
+    session = ConversationSession(
+        llm_provider=provider,
+        memory_manager=default_memory_manager,
+    )
+
     console.print(
-        "[cyan]Autonomous Windows AI Agent Shell[/cyan]\n"
+        "[cyan]Autonomous Windows AI Agent Shell (Phase 9 Personal Assistant)[/cyan]\n"
         "[dim]Commands: 'status', 'tools', 'config', 'memory', or enter a goal to execute. Type 'exit' to quit.[/dim]\n"
     )
 
@@ -171,9 +180,17 @@ def cmd_start() -> int:
             elif user_input.lower() == "memory":
                 cmd_memory()
             else:
-                cmd_task(user_input)
+                refinement = session.process_input(user_input)
+                if refinement.status == UserInteractionStatus.INFORMATIONAL:
+                    console.print(f"[bold cyan]Agent:[/bold cyan] {refinement.user_response_message}")
+                elif refinement.status == UserInteractionStatus.NEEDS_CLARIFICATION:
+                    console.print(f"[bold yellow]Agent (Clarification Needed):[/bold yellow] {refinement.clarification_question}")
+                elif refinement.status == UserInteractionStatus.READY_TO_PLAN:
+                    console.print(f"[bold cyan]Agent:[/bold cyan] {refinement.user_response_message}")
+                    cmd_task(refinement.refined_goal)
         except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Session terminated by user.[/dim]")
+            emergency_stop.trigger("User interrupted session (Ctrl+C)")
+            console.print("\n[bold red]Emergency Stop Triggered:[/bold red] Interactive session safely halted.")
             break
     return 0
 

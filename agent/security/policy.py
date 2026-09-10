@@ -398,13 +398,13 @@ class SecurityPolicy:
 
         # C. APPLICATION
         elif tool_name == "application":
-            command = str(sanitized_args.get("command", "")).strip()
+            command = str(sanitized_args.get("command") or sanitized_args.get("app_name") or "").strip()
             pid = sanitized_args.get("pid")
 
-            if action in ("app_list", "app_verify"):
+            if action in ("app_list", "app_verify", "list_applications", "verify_application"):
                 computed_level = PermissionLevel.SAFE
                 reason = f"Read-only application inspection: {action}"
-            elif action == "app_kill":
+            elif action in ("app_kill", "kill_application"):
                 if pid is None or not isinstance(pid, int) or pid <= 0:
                     return AuthorizationDecision(
                         decision=AuthorizationStatus.DENIED,
@@ -417,7 +417,7 @@ class SecurityPolicy:
                 computed_level = PermissionLevel.REQUIRES_APPROVAL
                 reason = f"Forceful process termination requires human approval: PID {pid}"
                 resource_scope = f"PID:{pid}"
-            elif action == "app_launch":
+            elif action in ("app_launch", "launch_application"):
                 perm = classify_command_permission(command)
                 standard_apps = ("notepad", "notepad.exe", "calc", "calc.exe", "msedge", "msedge.exe", "explorer", "explorer.exe")
                 cmd_stem = Path(command.split()[0]).name.lower() if command else ""
@@ -440,7 +440,7 @@ class SecurityPolicy:
                 else:
                     computed_level = PermissionLevel.LOW_RISK
                     reason = f"Launching application: '{command}'"
-            elif action in ("app_focus", "app_restore", "app_minimize", "app_close"):
+            elif action in ("app_focus", "focus_application", "app_restore", "app_minimize", "app_close", "close_application"):
                 computed_level = PermissionLevel.LOW_RISK
                 reason = f"Application window lifecycle action: {action}"
             else:

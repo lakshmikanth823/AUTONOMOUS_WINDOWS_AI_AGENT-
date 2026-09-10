@@ -90,6 +90,10 @@ class Agent:
         self._current_state: Optional[TaskState] = None
         self._is_paused: bool = False
         self._is_cancelled: bool = False
+        self._step_argument_resolver: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+        self._step_output_recorder: Optional[Callable[[str, Any], None]] = None
+        self._pre_dispatch_hook: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        self._current_executing_step_id: Optional[str] = None
 
     def _transition_to(self, state: TaskState, new_status: TaskStateEnum, detail: str = "") -> None:
         """Transition task state to new FSM status and record transition in state_history."""
@@ -215,6 +219,27 @@ class Agent:
             return state
 
         return self._run_from_understanding(state)
+
+    def run_plan(self, plan: Plan) -> TaskState:
+        """Execute a pre-formulated plan directly through the FSM execution loop."""
+        state = TaskState(
+            user_goal=plan.goal,
+            status=TaskStateEnum.RECEIVED,
+            state_history=[TaskStateEnum.RECEIVED.value],
+        )
+        self._current_state = state
+        state.plan = plan
+        logger = get_task_logger(state.task_id)
+        logger.info(f"FSM State [RECEIVED]: {plan.goal} (pre-formulated plan)")
+
+        if self.memory_manager:
+            try:
+                self.memory_manager.reset_working_memory()
+            except Exception:
+                pass
+
+        self._transition_to(state, TaskStateEnum.PLANNING)
+        return self._execute_plan_loop(state, start_index=0)
 
     def _run_from_understanding(self, state: TaskState) -> TaskState:
         logger = get_task_logger(state.task_id)
@@ -416,6 +441,18 @@ class Agent:
                             break
 
                     cur_sg.status = SubgoalStatus.RUNNING
+
+            # Pre-security template resolution hook for workflow orchestration
+            if hasattr(self, "_step_argument_resolver") and callable(self._step_argument_resolver):
+                try:
+                    step.arguments = self._step_argument_resolver(step.arguments)
+                except Exception as ex:
+                    logger.error(f"Workflow template resolution error on step '{step.step_id}': {ex}")
+                    state.errors.append(f"Workflow template resolution error: {ex}")
+                    state.remaining_issues.append(f"Workflow template resolution error: {ex}")
+                    state.termination_reason = "TEMPLATE_RESOLUTION_FAILED"
+                    self._transition_to(state, TaskStateEnum.FAILED, "TEMPLATE_RESOLUTION_FAILED")
+                    break
 
             # 3. DETERMINISTIC RISK ANALYSIS & SECURITY POLICY (OUTSIDE THE LLM)
             known_tools = {t.name for t in self.registry.list_tools()}
@@ -728,6 +765,7 @@ class Agent:
                                 f"Dynamically resolved semantic target '{target_query}' to coordinates ({resolved_coords[0]}, {resolved_coords[1]}) in window {target_hwnd}."
                             )
 
+                self._current_executing_step_id = step.step_id
                 action_id = f"act_{uuid.uuid4().hex[:8]}"
                 logger.info(
                     f"FSM State [EXECUTING]: {step.step_id} ({action_id}) -> "
@@ -787,6 +825,12 @@ class Agent:
                         pass
 
                 if not stale_aborted:
+                    if hasattr(self, "_pre_dispatch_hook") and callable(self._pre_dispatch_hook):
+                        try:
+                            self._pre_dispatch_hook(step.tool_required, effective_args)
+                        except Exception as ex:
+                            logger.warning(f"Pre-dispatch hook error on step '{step.step_id}': {ex}")
+
                     try:
                         tool_result = self.registry.execute(step.tool_required, effective_args)
                     except ToolError as e:
@@ -887,6 +931,13 @@ class Agent:
                     state.consecutive_no_progress_count = 0
                     state.last_successful_state = state.last_observation
                     logger.info(f"FSM State [VERIFIED]: Step {step.step_id} passed verification.")
+
+                    # Output recording hook for verified workflow steps
+                    if hasattr(self, "_step_output_recorder") and callable(self._step_output_recorder):
+                        try:
+                            self._step_output_recorder(step.step_id, tool_result.output)
+                        except Exception as ex:
+                            logger.warning(f"Workflow output recording hook failed for step '{step.step_id}': {ex}")
 
                     # If HierarchicalPlan, update status of owning subgoal
                     if hasattr(state.plan, "subgoals") and state.plan.subgoals:

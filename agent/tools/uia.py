@@ -145,20 +145,21 @@ class UIAClient:
 
     def _attach_interactive_desktop(self) -> Optional[int]:
         try:
+            cur_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+            if cur_desk:
+                return None
             hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
-                user32.SetThreadDesktop(hdesk)
-                return hdesk
+                if user32.SetThreadDesktop(hdesk):
+                    return hdesk
+                else:
+                    user32.CloseDesktop(hdesk)
         except Exception:
             pass
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        if hdesk:
-            try:
-                user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
+        pass
 
     def _get_uia_instance(self) -> Optional[c_void_p]:
         """Instantiate CUIAutomation and return interface pointer."""

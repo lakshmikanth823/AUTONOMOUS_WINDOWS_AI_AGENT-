@@ -212,21 +212,21 @@ def resolve_action_permission(tool_name: str, arguments: Dict[str, Any]) -> Acti
             return ActionPermission.COMPUTER_OCR
 
     elif tool == "application":
-        if action == "app_list":
+        if action in ("app_list", "list_applications"):
             return ActionPermission.APPLICATION_LIST
-        if action == "app_verify":
+        if action in ("app_verify", "verify_application"):
             return ActionPermission.APPLICATION_VERIFY
-        if action == "app_launch":
+        if action in ("app_launch", "launch_application"):
             return ActionPermission.APPLICATION_LAUNCH
-        if action == "app_focus":
+        if action in ("app_focus", "focus_application"):
             return ActionPermission.APPLICATION_FOCUS
         if action == "app_restore":
             return ActionPermission.APPLICATION_RESTORE
         if action == "app_minimize":
             return ActionPermission.APPLICATION_MINIMIZE
-        if action == "app_close":
+        if action in ("app_close", "close_application"):
             return ActionPermission.APPLICATION_CLOSE
-        if action == "app_kill":
+        if action in ("app_kill", "kill_application"):
             return ActionPermission.APPLICATION_KILL
 
     elif tool == "browser":

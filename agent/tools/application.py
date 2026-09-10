@@ -76,22 +76,23 @@ class ApplicationTool(Tool):
         self.kernel32 = ctypes.windll.kernel32
 
     def _attach_interactive_desktop(self) -> Optional[int]:
-        """Attach thread to interactive desktop if needed."""
+        """Attach thread to interactive desktop if needed (only if thread lacks one)."""
         try:
+            cur_desk = self.user32.GetThreadDesktop(self.kernel32.GetCurrentThreadId())
+            if cur_desk:
+                return None
             hdesk = self.user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
-                self.user32.SetThreadDesktop(hdesk)
-                return hdesk
+                if self.user32.SetThreadDesktop(hdesk):
+                    return hdesk
+                else:
+                    self.user32.CloseDesktop(hdesk)
         except Exception:
             pass
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        if hdesk:
-            try:
-                self.user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
+        pass
 
     def _is_window_visible(self, hwnd: int) -> bool:
         return bool(self.user32.IsWindowVisible(hwnd))
@@ -213,12 +214,15 @@ class ApplicationTool(Tool):
         before_hwnds = {a["hwnd"] for a in before_apps}
 
         try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.lpDesktop = r"WinSta0\Default"
             proc = subprocess.Popen(
                 cmd_input,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
                 shell=use_shell,
+                startupinfo=startupinfo,
             )
             try:
                 from agent.security.emergency import emergency_stop
@@ -537,7 +541,7 @@ class ApplicationTool(Tool):
 
     def execute(self, args: Dict[str, Any]) -> ToolResult:
         action = str(args.get("action", "")).strip()
-        command = str(args.get("command", "")).strip()
+        command = str(args.get("command") or args.get("app_name") or "").strip()
         cmd_args = args.get("args")
         pid = args.get("pid")
         hwnd = args.get("hwnd")
@@ -545,14 +549,14 @@ class ApplicationTool(Tool):
         timeout = float(args.get("timeout", 10.0))
         expected_state = str(args.get("expected_state", "running")).strip()
 
-        if action == "app_list":
+        if action in ("app_list", "list_applications"):
             apps = self.list_applications()
             return ToolResult(success=True, output={"count": len(apps), "applications": apps})
 
-        elif action == "app_launch":
+        elif action in ("app_launch", "launch_application"):
             return self.launch(command=command, args=cmd_args, timeout=timeout)
 
-        elif action == "app_focus":
+        elif action in ("app_focus", "focus_application"):
             return self.focus(hwnd=hwnd, title=title, pid=pid)
 
         elif action == "app_restore":
@@ -561,15 +565,15 @@ class ApplicationTool(Tool):
         elif action == "app_minimize":
             return self.minimize(hwnd=hwnd, title=title, pid=pid)
 
-        elif action == "app_close":
+        elif action in ("app_close", "close_application"):
             return self.close(hwnd=hwnd, pid=pid, title=title, timeout=timeout)
 
-        elif action == "app_kill":
+        elif action in ("app_kill", "kill_application"):
             if not pid:
                 return ToolResult(success=False, error="PID is required for app_kill.")
             return self.kill(pid=pid)
 
-        elif action == "app_verify":
+        elif action in ("app_verify", "verify_application"):
             return self.verify(pid=pid, hwnd=hwnd, title=title, expected_state=expected_state)
 
         return ToolResult(success=False, error=f"Unknown application action '{action}'.")

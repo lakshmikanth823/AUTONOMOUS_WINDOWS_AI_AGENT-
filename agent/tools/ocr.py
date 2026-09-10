@@ -284,22 +284,23 @@ class WindowsNativeOCR:
         """Attach current thread to the default interactive desktop station."""
         try:
             import ctypes
-            hdesk = ctypes.windll.user32.OpenDesktopW("default", 0, False, 0x01FF)
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            cur_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+            if cur_desk:
+                return None
+            hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
             if hdesk:
-                ctypes.windll.user32.SetThreadDesktop(hdesk)
-                return hdesk
+                if user32.SetThreadDesktop(hdesk):
+                    return hdesk
+                else:
+                    user32.CloseDesktop(hdesk)
         except Exception:
             pass
         return None
 
     def _detach_interactive_desktop(self, hdesk: Optional[int]) -> None:
-        """Close opened desktop handle."""
-        if hdesk:
-            try:
-                import ctypes
-                ctypes.windll.user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
+        pass
 
     def capture_window(self, hwnd: int, save_path: Optional[Path] = None) -> Tuple[Optional[Any], Optional[Dict[str, int]]]:
         """Capture rendered window surface using Win32 PrintWindow (PW_RENDERFULLCONTENT)."""
