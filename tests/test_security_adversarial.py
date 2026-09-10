@@ -851,3 +851,138 @@ def test_adv_browser_ssrf_and_dns_rebinding_limitation_documented():
     # Note: As documented in Phase 8 architecture, DNS rebinding (resolving a public domain
     # to private IP at socket connect time) is an acknowledged residual risk boundary pending socket-level DNS pinning.
 
+
+def test_adv_dotnet_io_file_self_modification_blocked():
+    """37. Verify .NET IO.File and StreamWriter reflection writes are permanently BLOCKED."""
+    from agent.config.permissions import classify_command_permission, PermissionLevel
+    from agent.security.policy import SecurityPolicy
+    from agent.security.authorization import AuthorizationRequest, ActionPermission, AuthorizationStatus
+
+    dotnet_commands = [
+        r'[System.IO.File]::WriteAllText("agent/security/policy.py", "malicious_code")',
+        r'[IO.File]::WriteAllBytes("agent/security/policy.py", @(0x00))',
+        r'[System.IO.File]::AppendAllText("agent/config/settings.py", "DEBUG=True")',
+        r'[IO.File]::Copy("temp.txt", "agent/security/policy.py")',
+        r'[IO.File]::Delete("logs/audit_trail.jsonl")',
+        r'[System.IO.StreamWriter]::new("agent/security/policy.py")',
+    ]
+
+    policy = SecurityPolicy()
+    for cmd in dotnet_commands:
+        level = classify_command_permission(cmd)
+        assert level == PermissionLevel.BLOCKED, f"Command '{cmd}' must be classified BLOCKED"
+
+        req = AuthorizationRequest(
+            action_name="execute",
+            tool_name="terminal",
+            arguments={"command": cmd},
+            permission=ActionPermission.TERMINAL_EXECUTE,
+        )
+        decision = policy.evaluate_authorization(req, known_tool_names={"terminal"})
+        assert decision.decision == AuthorizationStatus.DENIED
+        assert decision.is_blocked is True
+
+
+def test_adv_powershell_variable_indirection_security_tampering_blocked():
+    """38. Verify PowerShell variable assignment and string concatenation targeting security is BLOCKED."""
+    from agent.config.permissions import classify_command_permission, PermissionLevel
+    from agent.security.policy import SecurityPolicy
+    from agent.security.authorization import AuthorizationRequest, ActionPermission, AuthorizationStatus
+
+    indirection_commands = [
+        "$p = 'agent/security/policy.py'; Set-Content $p 'hacked'",
+        "$dest = \"agent\\security\\policy.py\"; sc $dest 'hacked'",
+        "$sec = 'agent' + '/' + 'security' + '/policy.py'; Set-Content $sec 'evil'",
+        "$cfg = 'agent' + '\\' + 'config' + '\\settings.py'; Clear-Content $cfg",
+        "$audit = 'logs' + '/' + 'audit_trail.jsonl'; Remove-Item $audit",
+        "$anchor = 'logs' + '/' + 'audit_anchor.json'; Remove-Item $anchor",
+    ]
+
+    policy = SecurityPolicy()
+    for cmd in indirection_commands:
+        level = classify_command_permission(cmd)
+        assert level == PermissionLevel.BLOCKED, f"Command '{cmd}' must be classified BLOCKED"
+
+        req = AuthorizationRequest(
+            action_name="execute",
+            tool_name="terminal",
+            arguments={"command": cmd},
+            permission=ActionPermission.TERMINAL_EXECUTE,
+        )
+        decision = policy.evaluate_authorization(req, known_tool_names={"terminal"})
+        assert decision.decision == AuthorizationStatus.DENIED
+        assert decision.is_blocked is True
+
+
+def test_adv_temporary_file_replacement_and_renaming_blocked():
+    """39. Verify replacing or renaming temporary files into protected security modules is BLOCKED."""
+    from agent.config.permissions import classify_command_permission, PermissionLevel
+    from agent.security.policy import SecurityPolicy
+    from agent.security.authorization import AuthorizationRequest, ActionPermission, AuthorizationStatus
+    from agent.tools.filesystem import FilesystemTool
+
+    rename_commands = [
+        "Move-Item temp_payload.py agent/security/policy.py",
+        "Copy-Item temp_config.py agent/config/settings.py",
+        "Rename-Item temp_sec.py agent/security/authorization.py",
+        "mv temp.py agent/security/sanitizer.py",
+        "cp temp.json logs/audit_anchor.json",
+    ]
+
+    policy = SecurityPolicy()
+    for cmd in rename_commands:
+        level = classify_command_permission(cmd)
+        assert level == PermissionLevel.BLOCKED, f"Command '{cmd}' must be classified BLOCKED"
+
+        req = AuthorizationRequest(
+            action_name="execute",
+            tool_name="terminal",
+            arguments={"command": cmd},
+            permission=ActionPermission.TERMINAL_EXECUTE,
+        )
+        decision = policy.evaluate_authorization(req, known_tool_names={"terminal"})
+        assert decision.decision == AuthorizationStatus.DENIED
+        assert decision.is_blocked is True
+
+    # Also test FilesystemTool move_file and copy_file
+    fs = FilesystemTool()
+    res_move = fs.execute({
+        "action": "move_file",
+        "path": "temp.txt",
+        "destination": "agent/security/policy.py",
+    })
+    assert res_move.success is False
+    assert "Self-modification security violation" in res_move.error
+
+    res_copy = fs.execute({
+        "action": "copy_file",
+        "path": "temp.txt",
+        "destination": "logs/audit_anchor.json",
+    })
+    assert res_copy.success is False
+    assert "Self-modification security violation" in res_copy.error
+
+
+def test_adv_audit_anchor_tail_truncation_detection(tmp_path):
+    """40. Verify audit anchor detects tail truncation and record count mismatch."""
+    from agent.security.audit import AuditLogger
+
+    log_file = tmp_path / "adv_audit.jsonl"
+    logger = AuditLogger(log_path=log_file)
+
+    logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"path": "f1"}, permission_level="SAFE")
+    logger.log_action(task_id="t1", action_id="a2", tool_name="fs", arguments={"path": "f2"}, permission_level="SAFE")
+    logger.log_action(task_id="t1", action_id="a3", tool_name="terminal", arguments={"command": "dir"}, permission_level="LOW_RISK")
+
+    valid, err = logger.verify_integrity()
+    assert valid is True
+    assert err is None
+
+    # Truncate the last record
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    log_file.write_text(lines[0] + "\n" + lines[1] + "\n", encoding="utf-8")
+
+    valid_trunc, err_trunc = logger.verify_integrity()
+    assert valid_trunc is False
+    assert "Tail truncation detected" in err_trunc
+

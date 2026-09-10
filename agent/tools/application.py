@@ -310,16 +310,65 @@ class ApplicationTool(Tool):
             )
         h = target["hwnd"]
 
-        if target["is_minimized"]:
-            self.user32.ShowWindow(h, SW_RESTORE)
-            time.sleep(0.05)
+        cur_thread = self.kernel32.GetCurrentThreadId()
+        fg_hwnd = self.user32.GetForegroundWindow()
+        fg_thread = self.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+        target_thread = self.user32.GetWindowThreadProcessId(h, None) if h else 0
 
-        self.user32.SetForegroundWindow(h)
-        time.sleep(0.05)
+        if fg_thread and fg_thread != cur_thread:
+            try:
+                self.user32.AttachThreadInput(cur_thread, fg_thread, True)
+            except Exception:
+                pass
+        if target_thread and target_thread != cur_thread:
+            try:
+                self.user32.AttachThreadInput(cur_thread, target_thread, True)
+            except Exception:
+                pass
+
+        try:
+            if target.get("is_minimized", False) or self._is_window_minimized(h):
+                self.user32.ShowWindow(h, SW_RESTORE)
+                time.sleep(0.05)
+
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_SHOWWINDOW = 0x0040
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            self.user32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+            self.user32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW)
+            self.user32.BringWindowToTop(h)
+
+            try:
+                self.user32.SwitchToThisWindow(h, True)
+            except Exception:
+                pass
+
+            self.user32.SetForegroundWindow(h)
+
+            success = False
+            for _ in range(15):
+                fg = self._get_foreground_hwnd()
+                if fg == h:
+                    success = True
+                    break
+                time.sleep(0.05)
+        finally:
+            if target_thread and target_thread != cur_thread:
+                try:
+                    self.user32.AttachThreadInput(cur_thread, target_thread, False)
+                except Exception:
+                    pass
+            if fg_thread and fg_thread != cur_thread:
+                try:
+                    self.user32.AttachThreadInput(cur_thread, fg_thread, False)
+                except Exception:
+                    pass
+            self._detach_interactive_desktop(hdesk)
 
         fg = self._get_foreground_hwnd()
         success = (fg == h)
-        self._detach_interactive_desktop(hdesk)
         return ToolResult(
             success=success,
             output={

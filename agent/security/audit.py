@@ -16,30 +16,38 @@ from agent.config.settings import get_settings
 class AuditLogger:
     """Append-only audit trail logger with cryptographic hash chaining for non-repudiation."""
 
-    def __init__(self, log_path: Optional[Path] = None) -> None:
+    def __init__(self, log_path: Optional[Path] = None, anchor_path: Optional[Path] = None) -> None:
         settings = get_settings()
         self.log_path = log_path or (settings.logs_dir / "audit_trail.jsonl")
+        self.anchor_path = anchor_path or self.log_path.with_name(self.log_path.stem + "_anchor.json")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.anchor_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._last_hash = self._read_last_hash()
+        self._last_hash, self._current_seq = self._read_last_state()
 
-    def _read_last_hash(self) -> str:
-        """Read the hash of the last entry in the audit trail, or initialize with genesis hash."""
+    def _read_last_state(self) -> Tuple[str, int]:
+        """Read the hash and sequence count of the last entry in the audit trail."""
         if not self.log_path.exists() or self.log_path.stat().st_size == 0:
-            return "0" * 64
+            return "0" * 64, 0
 
-        last_line = ""
+        last_hash = "0" * 64
+        count = 0
         try:
             with open(self.log_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    if line.strip():
-                        last_line = line.strip()
-            if last_line:
-                record = json.loads(last_line)
-                return record.get("hash", "0" * 64)
+                    line_str = line.strip()
+                    if line_str:
+                        count += 1
+                        try:
+                            record = json.loads(line_str)
+                            last_hash = record.get("hash", last_hash)
+                            if "seq" in record and isinstance(record["seq"], int):
+                                count = record["seq"]
+                        except Exception:
+                            pass
         except Exception:
             pass
-        return "0" * 64
+        return last_hash, count
 
     def _mask_arguments(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Mask and redact sensitive values from audit trail arguments."""
@@ -81,8 +89,10 @@ class AuditLogger:
         with self._lock:
             timestamp = datetime.now(timezone.utc).isoformat()
             clean_args = self._mask_arguments(arguments)
+            self._current_seq += 1
 
             record_payload = {
+                "seq": self._current_seq,
                 "timestamp": timestamp,
                 "event_type": event_type,
                 "task_id": task_id,
@@ -109,6 +119,26 @@ class AuditLogger:
                 f.write(json.dumps(record_payload) + "\n")
 
             self._last_hash = entry_hash
+
+            # Update trusted anchor file atomically
+            anchor_data = {
+                "head_hash": entry_hash,
+                "record_count": self._current_seq,
+                "genesis_hash": "0" * 64,
+                "last_updated": timestamp,
+            }
+            tmp_anchor = self.anchor_path.with_suffix(".tmp")
+            try:
+                with open(tmp_anchor, "w", encoding="utf-8") as f:
+                    json.dump(anchor_data, f, indent=2)
+                tmp_anchor.replace(self.anchor_path)
+            except Exception:
+                try:
+                    with open(self.anchor_path, "w", encoding="utf-8") as f:
+                        json.dump(anchor_data, f, indent=2)
+                except Exception:
+                    pass
+
             return record_payload
 
     def log_authorization(
@@ -154,12 +184,26 @@ class AuditLogger:
         )
 
     def verify_integrity(self) -> Tuple[bool, Optional[str]]:
-        """Verify that the audit trail has not been altered or truncated."""
+        """Verify that the audit trail has not been altered, manipulated, or truncated."""
         with self._lock:
-            if not self.log_path.exists():
+            anchor_data: Optional[Dict[str, Any]] = None
+            if self.anchor_path.exists():
+                try:
+                    with open(self.anchor_path, "r", encoding="utf-8") as f:
+                        anchor_data = json.load(f)
+                except Exception as e:
+                    return False, f"Audit anchor corrupted: {e}"
+
+            if not self.log_path.exists() or self.log_path.stat().st_size == 0:
+                if anchor_data and anchor_data.get("record_count", 0) > 0:
+                    return False, (
+                        f"Audit trail missing or empty, but anchor expects "
+                        f"{anchor_data.get('record_count')} records."
+                    )
                 return True, None
 
             prev_hash = "0" * 64
+            current_seq = 0
             line_num = 0
 
             with open(self.log_path, "r", encoding="utf-8") as f:
@@ -176,6 +220,15 @@ class AuditLogger:
 
                     recorded_hash = record.get("hash")
                     recorded_prev_hash = record.get("prev_hash")
+                    seq = record.get("seq")
+
+                    # Verify sequence continuity if present
+                    if seq is not None:
+                        if seq != current_seq + 1:
+                            return False, f"Sequence gap or mismatch at line {line_num}: expected seq {current_seq + 1}, got {seq}"
+                        current_seq = seq
+                    else:
+                        current_seq += 1
 
                     if recorded_prev_hash != prev_hash:
                         return False, f"Hash chain broken at line {line_num}: expected prev {prev_hash}, got {recorded_prev_hash}"
@@ -191,6 +244,16 @@ class AuditLogger:
                         return False, f"Hash mismatch at line {line_num}: recorded {recorded_hash}, expected {expected_hash}"
 
                     prev_hash = recorded_hash
+
+            # Anchor tail truncation check
+            if anchor_data:
+                expected_count = anchor_data.get("record_count", 0)
+                expected_head = anchor_data.get("head_hash", "0" * 64)
+                if current_seq != expected_count or prev_hash != expected_head:
+                    return False, (
+                        f"Tail truncation detected: anchor expects {expected_count} records ending with {expected_head}, "
+                        f"found {current_seq} records ending with {prev_hash}"
+                    )
 
             return True, None
 

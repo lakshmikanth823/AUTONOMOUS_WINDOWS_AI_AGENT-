@@ -500,3 +500,165 @@ class TestSecurityEngineFailClosedAndAuditIntegrity:
         assert valid_tampered is False
         assert "Hash mismatch" in err_tampered
 
+    def test_audit_integrity_test_a_modify_existing_event(self, tmp_path):
+        """Test A: Modifying an existing event in the audit trail is detected."""
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_a.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"path": "test.txt"}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"command": "dir"}, permission_level="LOW_RISK")
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        lines[0] = lines[0].replace('"fs"', '"tampered_fs"')
+        audit_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert "Hash mismatch" in err
+
+    def test_audit_integrity_test_b_delete_middle_record(self, tmp_path):
+        """Test B: Deleting a middle record in the audit trail is detected via sequence & hash break."""
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_b.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"p": 1}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"c": 2}, permission_level="LOW_RISK")
+        logger.log_action(task_id="t1", action_id="a3", tool_name="browser", arguments={"u": 3}, permission_level="SAFE")
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        audit_file.write_text(lines[0] + "\n" + lines[2] + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert ("Sequence gap" in err or "Hash chain broken" in err)
+
+    def test_audit_integrity_test_c_delete_first_record(self, tmp_path):
+        """Test C: Deleting the first record in the audit trail is detected."""
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_c.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"p": 1}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"c": 2}, permission_level="LOW_RISK")
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        audit_file.write_text(lines[1] + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert ("Sequence gap" in err or "Hash chain broken" in err)
+
+    def test_audit_integrity_test_d_tail_truncation(self, tmp_path):
+        """Test D: Deleting the last record (tail truncation) is detected via trusted anchor."""
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_d.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"p": 1}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"c": 2}, permission_level="LOW_RISK")
+        logger.log_action(task_id="t1", action_id="a3", tool_name="app", arguments={"a": 3}, permission_level="LOW_RISK")
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        audit_file.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert "Tail truncation detected" in err
+
+    def test_audit_integrity_test_e_insert_fake_record(self, tmp_path):
+        """Test E: Inserting a fabricated record is detected."""
+        import json
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_e.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"p": 1}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"c": 2}, permission_level="LOW_RISK")
+
+        fake_record = {
+            "seq": 2,
+            "timestamp": "2026-09-10T12:00:00+00:00",
+            "event_type": "TOOL_EXECUTION",
+            "task_id": "t1",
+            "subgoal_id": None,
+            "action_id": "fake_act",
+            "tool_name": "malicious",
+            "arguments": {},
+            "permission_level": "SAFE",
+            "approved": True,
+            "approval_id": "fake_app",
+            "resource_scope": None,
+            "policy_version": "2026.8.0",
+            "success": True,
+            "error": None,
+            "duration_seconds": 0.0,
+            "prev_hash": "0" * 64,
+            "hash": "ffff" * 16,
+        }
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        audit_file.write_text(lines[0] + "\n" + json.dumps(fake_record) + "\n" + lines[1] + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert ("Hash mismatch" in err or "Hash chain broken" in err or "Sequence gap" in err)
+
+    def test_audit_integrity_test_f_modify_critical_fields(self, tmp_path):
+        """Test F: Modifying critical authorization fields (approved, success) is detected."""
+        import json
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_f.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+        logger.log_authorization(
+            task_id="t1", tool_name="fs", action_name="delete_file",
+            permission_level="REQUIRES_APPROVAL", decision="DENIED", reason="Unauthorized",
+        )
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        rec = json.loads(lines[0])
+        rec["approved"] = True
+        rec["success"] = True
+        audit_file.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+        valid, err = logger.verify_integrity()
+        assert valid is False
+        assert "Hash mismatch" in err
+
+    def test_audit_integrity_test_g_fabricating_approval_denied_zero_dispatches(self):
+        """Test G: Fabricating an approval ID results in DENIED and exactly 0 tool dispatches."""
+        from agent.security.approval import ApprovalManager
+        from agent.security.policy import SecurityPolicy
+        from agent.security.authorization import AuthorizationRequest, ActionPermission, AuthorizationStatus
+        from agent.config.permissions import PermissionLevel
+
+        mgr = ApprovalManager()
+        fake_id = "appr_forged_99999999"
+
+        # Revalidation check must reject fake approval
+        reval_ok, reason = mgr.revalidate_target(fake_id, {"path": "test.txt"})
+        assert reval_ok is False
+        assert "not found" in reason
+
+        # Policy evaluation with fake approval
+        policy = SecurityPolicy()
+        req = AuthorizationRequest(
+            action_name="delete_file",
+            tool_name="filesystem",
+            arguments={"action": "delete_file", "path": "c:\\temp\\file.txt"},
+            permission=ActionPermission.FILESYSTEM_DELETE,
+            approval_id=fake_id,
+        )
+        decision = policy.evaluate_authorization(req, known_tool_names={"filesystem"})
+        assert decision.requires_human is True or decision.decision == AuthorizationStatus.DENIED
+

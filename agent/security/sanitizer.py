@@ -147,8 +147,18 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
         "/agent/config",
         "settings.py",
         "permissions.py",
+        "policy.py",
+        "authorization.py",
+        "approval.py",
+        "audit.py",
+        "emergency.py",
+        "redactor.py",
+        "sanitizer.py",
         "audit_trail.jsonl",
+        "audit_anchor.json",
+        "audit_anchor",
         "audit.log",
+        ".env",
     ]
     for sec_marker in security_file_markers:
         if sec_marker in resolved_str or sec_marker in raw_lower:

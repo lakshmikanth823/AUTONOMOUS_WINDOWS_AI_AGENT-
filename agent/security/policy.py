@@ -41,8 +41,12 @@ BLOCKED_PATTERNS: List[re.Pattern] = [
     re.compile(r"\b(Invoke-Expression|iex)\b", re.IGNORECASE),
     re.compile(r"\[Convert\]::FromBase64String", re.IGNORECASE),
     re.compile(r"\bStart-Process\b.*-Verb\s+RunAs", re.IGNORECASE),
-    re.compile(r"(Set-Content|Out-File|Add-Content|Remove-Item|Clear-Content|>|>>)\s+.*(agent[/\\].*security|agent[/\\].*config|audit_trail|permissions\.py|settings\.py|policy\.py)", re.IGNORECASE),
-    re.compile(r"\bpython(\.exe)?\s+-c\s+.*(agent\.security|agent\.config|audit_trail)", re.IGNORECASE),
+    re.compile(r"\[(System\.)?IO\.File\]\s*::\s*(WriteAllText|WriteAllBytes|WriteAllLines|AppendAllText|AppendAllLines|OpenWrite|Create|CreateText|Copy|Move|Replace|Delete)", re.IGNORECASE),
+    re.compile(r"\[(System\.)?IO\.(StreamWriter|FileStream|FileInfo)\]", re.IGNORECASE),
+    re.compile(r"(Set-Content|Out-File|Add-Content|Remove-Item|Clear-Content|Move-Item|Copy-Item|Rename-Item|New-Item|\bsc\b|\bac\b|\bclc\b|\bri\b|\bmi\b|\bcpi\b|\brni\b|\bni\b|>|>>)\s+.*(agent[/\\].*(security|config)|audit_trail|audit_anchor|permissions\.py|settings\.py|policy\.py|authorization\.py|approval\.py|audit\.py|emergency\.py|sanitizer\.py|\.env)", re.IGNORECASE),
+    re.compile(r"\$[a-z0-9_]+\s*=\s*['\"].*(agent[/\\].*(security|config)|audit_trail|audit_anchor|permissions|policy|settings).*", re.IGNORECASE),
+    re.compile(r"\b(Move-Item|Copy-Item|Rename-Item|move|mv|copy|cp|ren|rni)\b.*(agent[/\\].*(security|config)|audit_trail|audit_anchor)", re.IGNORECASE),
+    re.compile(r"\bpython(\.exe)?\s+-c\s+.*(agent\.security|agent\.config|audit_trail|audit_anchor)", re.IGNORECASE),
 ]
 
 # Patterns for operations requiring human-in-the-loop approval
@@ -73,6 +77,21 @@ def classify_command_permission(command: str) -> PermissionLevel:
     cmd_clean = command.strip()
     if not cmd_clean:
         return PermissionLevel.SAFE
+
+    # Check for self-modification / obfuscated security tampering
+    cmd_low = cmd_clean.lower()
+    collapsed = re.sub(r"['\"`\s\+]", "", cmd_low)
+    if (
+        "agent/security" in collapsed
+        or "agent\\security" in collapsed
+        or "agent.security" in collapsed
+        or "agent/config" in collapsed
+        or "agent\\config" in collapsed
+        or "agent.config" in collapsed
+        or "audit_trail" in collapsed
+        or "audit_anchor" in collapsed
+    ):
+        return PermissionLevel.BLOCKED
 
     for pattern in BLOCKED_PATTERNS:
         if pattern.search(cmd_clean):
@@ -334,11 +353,21 @@ class SecurityPolicy:
                 "agent/config", "agent\\config", "agent.config",
                 "settings.py", "permissions.py", "policy.py", "authorization.py",
                 "approval.py", "audit.py", "emergency.py", "redactor.py", "sanitizer.py",
-                "audit_trail.jsonl", "audit.log",
+                "audit_trail.jsonl", "audit_anchor.json", "audit_anchor", "audit.log",
                 "agent_require_human_approval", "set-executionpolicy",
             ]
             cmd_low = command.lower()
-            if any(m in cmd_low for m in sec_bypass_markers):
+            collapsed = re.sub(r"['\"`\s\+]", "", cmd_low)
+            if (
+                any(m in cmd_low for m in sec_bypass_markers)
+                or "agent/security" in collapsed
+                or "agent\\security" in collapsed
+                or "agent.security" in collapsed
+                or "agent/config" in collapsed
+                or "agent\\config" in collapsed
+                or "audit_trail" in collapsed
+                or "audit_anchor" in collapsed
+            ):
                 return AuthorizationDecision(
                     decision=AuthorizationStatus.DENIED,
                     reason=f"Security self-modification violation: command attempts to modify or manipulate security infrastructure: '{command}'",
