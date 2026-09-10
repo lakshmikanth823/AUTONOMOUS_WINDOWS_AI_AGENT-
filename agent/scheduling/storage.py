@@ -155,6 +155,8 @@ class TaskStore:
             ))
             conn.commit()
 
+    register_task = save_task
+
     def get_task(self, task_id: str) -> Optional[PersistentTask]:
         """Fetch persistent task by task_id."""
         with self._get_connection() as conn:
@@ -402,3 +404,7 @@ class TaskStore:
             conn.execute("DELETE FROM task_locks;")
             conn.commit()
         return recovered_tasks
+
+    def close(self) -> None:
+        """Close database connection cleanly."""
+        pass
