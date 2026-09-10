@@ -334,3 +334,169 @@ class TestApprovalManagerAndTOCTOU:
         )
         assert reval_ok is False
         assert "Policy version mismatch" in reason
+
+    def test_pid_reuse_detected_by_creation_timestamp(self):
+        """Verify that a reused PID with a different creation timestamp is detected and rejected."""
+        mgr = ApprovalManager()
+        req = mgr.create_request(
+            action="app_kill",
+            permission=ActionPermission.APPLICATION_KILL,
+            resource="Process",
+            target_hash="hash_pid",
+            target_metadata={
+                "pid": 5555,
+                "process_creation_time": 133000000000000000,
+                "process_image_path": "c:\\windows\\system32\\notepad.exe",
+            },
+            risk_level=PermissionLevel.REQUIRES_APPROVAL,
+            reason="Terminate process",
+            policy_version="2026.8.0",
+        )
+        mgr.record_decision(req.approval_id, approved=True)
+
+        # Same PID but simulated reused process with different creation timestamp
+        reval_ok, reason = mgr.revalidate_target(
+            req.approval_id,
+            {
+                "pid": 5555,
+                "process_creation_time": 133999999999999999,  # Changed timestamp -> PID reused!
+                "process_image_path": "c:\\windows\\system32\\notepad.exe",
+            },
+        )
+        assert reval_ok is False
+        assert "was reused by a different process" in reason
+
+    def test_pid_reuse_detected_by_executable_image_mutation(self):
+        """Verify that a reused PID with mutated executable path is detected and rejected."""
+        mgr = ApprovalManager()
+        req = mgr.create_request(
+            action="app_kill",
+            permission=ActionPermission.APPLICATION_KILL,
+            resource="Process",
+            target_hash="hash_pid_img",
+            target_metadata={
+                "pid": 7777,
+                "process_creation_time": 133000000000000000,
+                "process_image_path": "c:\\windows\\system32\\notepad.exe",
+            },
+            risk_level=PermissionLevel.REQUIRES_APPROVAL,
+            reason="Terminate process",
+            policy_version="2026.8.0",
+        )
+        mgr.record_decision(req.approval_id, approved=True)
+
+        # Same PID and timestamp but different binary
+        reval_ok, reason = mgr.revalidate_target(
+            req.approval_id,
+            {
+                "pid": 7777,
+                "process_creation_time": 133000000000000000,
+                "process_image_path": "c:\\malicious\\payload.exe",
+            },
+        )
+        assert reval_ok is False
+        assert "executable image mutated" in reason
+
+    def test_approval_spoofing_rejected(self):
+        """Verify that an unrecorded or synthetic approval ID is rejected fail-closed."""
+        mgr = ApprovalManager()
+        fake_id = "appr_spoofed_000000"
+        reval_ok, reason = mgr.revalidate_target(fake_id, {"hwnd": 1234})
+        assert reval_ok is False
+        assert f"Approval ID '{fake_id}' not found" in reason
+
+
+class TestReparsePointAndJunctionSafety:
+    """Test Windows directory junctions and symlink escape prevention."""
+
+    def test_reparse_point_junction_escape_rejected(self, tmp_path):
+        import _winapi
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        outside = tmp_path / "outside_sensitive"
+        outside.mkdir()
+        secret_file = outside / "secret.txt"
+        secret_file.write_text("sensitive data", encoding="utf-8")
+
+        # Create Windows directory junction inside sandbox pointing to outside
+        junction_dir = sandbox / "junction_link"
+        _winapi.CreateJunction(str(outside), str(junction_dir))
+
+        traversal_path = junction_dir / "secret.txt"
+        with pytest.raises(PermissionError, match="outside allowed sandbox boundaries"):
+            validate_path_safety(str(traversal_path), allowed_roots=[sandbox])
+
+
+class TestSecurityEngineFailClosedAndAuditIntegrity:
+    """Test security engine exception handling and audit trail anti-tampering."""
+
+    def test_security_engine_exception_guarantees_deny(self):
+        from unittest.mock import MagicMock
+        from agent.core.agent import Agent
+        from agent.core.planner import Planner
+        from agent.core.state import TaskStateEnum
+        from agent.llm.provider import MockLLMProvider
+        from agent.tools.registry import ToolRegistry
+        from agent.tools.base import Tool, ToolResult
+
+        tool_executed = False
+
+        class SpyTool(Tool):
+            name = "spy_action"
+            description = "Spy tool to prove zero execution"
+            permission_level = PermissionLevel.LOW_RISK
+            input_schema = {"type": "object", "properties": {}}
+            def execute(self, args):
+                nonlocal tool_executed
+                tool_executed = True
+                return ToolResult(success=True, output="Executed")
+
+        registry = ToolRegistry()
+        registry.register(SpyTool())
+
+        import json
+        plan = json.dumps({
+            "goal": "Test fail-closed",
+            "steps": [
+                {
+                    "step_id": "step_1",
+                    "objective": "Execute action",
+                    "tool_required": "spy_action",
+                    "arguments": {},
+                    "risk_level": "LOW_RISK",
+                }
+            ]
+        })
+        planner = Planner(provider=MockLLMProvider(responses=[plan]))
+
+        policy_mock = MagicMock()
+        policy_mock.evaluate_action.side_effect = RuntimeError("Security policy engine internal crash")
+
+        agent = Agent(planner=planner, tool_registry=registry, security_policy=policy_mock)
+        state = agent.run("Test fail closed on engine failure")
+
+        assert state.status == TaskStateEnum.FAILED
+        assert state.termination_reason == "SECURITY_BLOCKED"
+        assert tool_executed is False, "Underlying tool must NEVER be dispatched when security engine fails"
+
+    def test_audit_trail_integrity_and_tampering_detection(self, tmp_path):
+        from agent.security.audit import AuditLogger
+        audit_file = tmp_path / "audit_trail.jsonl"
+        logger = AuditLogger(log_path=audit_file)
+
+        logger.log_action(task_id="t1", action_id="a1", tool_name="fs", arguments={"p": "1"}, permission_level="SAFE")
+        logger.log_action(task_id="t1", action_id="a2", tool_name="term", arguments={"c": "dir"}, permission_level="LOW_RISK")
+
+        valid, err = logger.verify_integrity()
+        assert valid is True
+        assert err is None
+
+        # Tamper with the audit log file (modify a character in the first record)
+        lines = audit_file.read_text(encoding="utf-8").splitlines()
+        tampered_first = lines[0].replace('"fs"', '"hacked_fs"')
+        audit_file.write_text(tampered_first + "\n" + lines[1] + "\n", encoding="utf-8")
+
+        valid_tampered, err_tampered = logger.verify_integrity()
+        assert valid_tampered is False
+        assert "Hash mismatch" in err_tampered
+

@@ -107,9 +107,13 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
     if ":" in stripped_drive:
         raise PermissionError("Access to NTFS Alternate Data Streams (ADS) is blocked.")
 
-    # 5. Resolve absolute canonical path
-    resolved = path_obj.resolve()
+    # 5. Resolve absolute canonical path and reparse points (symlinks, directory junctions)
+    try:
+        resolved = Path(os.path.realpath(str(path_obj.resolve())))
+    except Exception:
+        resolved = path_obj.resolve()
     resolved_str = str(resolved).lower()
+    raw_lower = raw_clean.lower()
 
     # 6. Check critical system directories
     critical_system_dirs = [
@@ -135,16 +139,19 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
         if marker in resolved_str:
             raise PermissionError(f"Access to sensitive credential path '{resolved}' is blocked.")
 
-    # 8. Self-modification protection (agent must not modify its own security policies or settings)
+    # 8. Self-modification protection (agent must not modify its own security policies, configuration, or audit trail)
     security_file_markers = [
-        "\\agent\\security\\",
-        "\\agent\\config\\settings.py",
-        "\\agent\\config\\permissions.py",
-        "\\audit_trail.jsonl",
+        "\\agent\\security",
+        "/agent/security",
+        "\\agent\\config",
+        "/agent/config",
+        "settings.py",
+        "permissions.py",
+        "audit_trail.jsonl",
+        "audit.log",
     ]
-    # If the path looks like a security module or audit trail
     for sec_marker in security_file_markers:
-        if sec_marker in resolved_str:
+        if sec_marker in resolved_str or sec_marker in raw_lower:
             raise PermissionError(f"Self-modification security violation: access to security file '{resolved}' is blocked.")
 
     # 9. Component-aware sandbox boundary verification if allowed_roots is specified
@@ -152,7 +159,11 @@ def validate_path_safety(raw_path: str, allowed_roots: Optional[List[Path]] = No
         resolved_parts = [p.lower() for p in resolved.parts]
         in_sandbox = False
         for root in allowed_roots:
-            root_parts = [p.lower() for p in root.resolve().parts]
+            try:
+                canonical_root = Path(os.path.realpath(str(root.resolve())))
+            except Exception:
+                canonical_root = root.resolve()
+            root_parts = [p.lower() for p in canonical_root.parts]
             if len(resolved_parts) >= len(root_parts) and resolved_parts[:len(root_parts)] == root_parts:
                 in_sandbox = True
                 break

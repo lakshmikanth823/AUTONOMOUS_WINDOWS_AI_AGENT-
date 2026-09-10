@@ -220,6 +220,11 @@ class ApplicationTool(Tool):
                 stdin=subprocess.DEVNULL,
                 shell=use_shell,
             )
+            try:
+                from agent.security.emergency import emergency_stop
+                emergency_stop.register_pid(proc.pid)
+            except Exception:
+                pass
         except Exception as e:
             return ToolResult(success=False, error=f"Failed to launch process '{command}': {e}")
 

@@ -419,12 +419,25 @@ class Agent:
 
             # 3. DETERMINISTIC RISK ANALYSIS & SECURITY POLICY (OUTSIDE THE LLM)
             known_tools = {t.name for t in self.registry.list_tools()}
-            sec_eval = self.security_policy.evaluate_action(
-                tool_name=step.tool_required,
-                arguments=step.arguments,
-                known_tool_names=known_tools,
-                llm_requested_level=step.risk_level,
-            )
+            try:
+                sec_eval = self.security_policy.evaluate_action(
+                    tool_name=step.tool_required,
+                    arguments=step.arguments,
+                    known_tool_names=known_tools,
+                    llm_requested_level=step.risk_level,
+                )
+            except Exception as e:
+                logger.critical(
+                    f"Security policy evaluation failure on step '{step.step_id}': {e}. Enforcing fail-closed DENY."
+                )
+                from agent.security.policy import SecurityEvaluation
+                sec_eval = SecurityEvaluation(
+                    level=PermissionLevel.BLOCKED,
+                    reason=f"Security engine exception: {e} (fail-closed default: DENIED)",
+                    is_blocked=True,
+                    requires_human=False,
+                    sanitized_arguments=dict(step.arguments),
+                )
 
             # Deterministic policy strictly overrides LLM self-classification
             step.risk_level = sec_eval.level

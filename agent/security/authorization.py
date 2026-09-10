@@ -83,6 +83,40 @@ class AuthorizationStatus(str, enum.Enum):
     TOCTOU_INVALIDATED = "TOCTOU_INVALIDATED"
 
 
+def get_process_creation_identity(pid: Optional[int]) -> Dict[str, Any]:
+    """Extract Win32 process creation timestamp and canonical image path to guard against PID reuse."""
+    if not pid or int(pid) <= 0:
+        return {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        h_proc = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h_proc:
+            return {"pid_alive": False}
+        try:
+            class FILETIME(ctypes.Structure):
+                _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+            c_time, e_time, k_time, u_time = FILETIME(), FILETIME(), FILETIME(), FILETIME()
+            res = k.GetProcessTimes(h_proc, ctypes.byref(c_time), ctypes.byref(e_time), ctypes.byref(k_time), ctypes.byref(u_time))
+            creation_ts = ((c_time.dwHighDateTime << 32) | c_time.dwLowDateTime) if res else 0
+
+            buf = ctypes.create_unicode_buffer(1024)
+            sz = wintypes.DWORD(1024)
+            path_ok = k.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(sz))
+            image_path = buf.value.lower() if path_ok else ""
+
+            return {
+                "pid_alive": True,
+                "process_creation_time": creation_ts,
+                "process_image_path": image_path,
+            }
+        finally:
+            k.CloseHandle(h_proc)
+    except Exception:
+        return {}
+
+
 class AuthorizationRequest(BaseModel):
     """Structured request submitted to the central host-side authorization engine."""
 
@@ -100,13 +134,17 @@ class AuthorizationRequest(BaseModel):
 
     def compute_target_hash(self) -> str:
         """Compute deterministic fingerprint of target state for TOCTOU validation."""
+        pid_val = self.arguments.get("pid") or self.target_metadata.get("pid")
+        proc_ident = get_process_creation_identity(pid_val) if pid_val else {}
         target_components = {
             "tool": self.tool_name,
             "action": self.action_name,
             "resource": self.resource_scope,
             "expected_hwnd": self.arguments.get("hwnd") or self.arguments.get("expected_hwnd") or self.target_metadata.get("hwnd"),
             "target_element": self.arguments.get("target_element") or self.arguments.get("element_name"),
-            "pid": self.arguments.get("pid") or self.target_metadata.get("pid"),
+            "pid": pid_val,
+            "pid_creation_time": proc_ident.get("process_creation_time", self.target_metadata.get("process_creation_time")),
+            "pid_image_path": proc_ident.get("process_image_path", self.target_metadata.get("process_image_path")),
             "url": self.arguments.get("url") or self.target_metadata.get("url"),
             "path": self.arguments.get("path") or self.arguments.get("destination") or self.target_metadata.get("path"),
         }

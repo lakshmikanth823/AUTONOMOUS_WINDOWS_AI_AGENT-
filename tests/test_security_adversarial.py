@@ -712,3 +712,142 @@ def test_adv_malformed_authorization_request_fail_closed():
     decision = policy.evaluate_authorization(malformed_req, known_tool_names={"filesystem", "computer"})
     assert decision.decision == AuthorizationStatus.DENIED
     assert decision.is_blocked is True
+
+
+def test_adv_indirect_terminal_self_modification_blocked():
+    """33. Verify indirect terminal commands attempting to tamper with security files are permanently BLOCKED."""
+    from agent.security.authorization import ActionPermission, AuthorizationRequest, AuthorizationStatus
+    from agent.security.policy import SecurityPolicy
+    
+    policy = SecurityPolicy()
+    
+    attack_commands = [
+        "Set-Content -Path agent/security/policy.py -Value 'malicious code'",
+        "echo 'hacked' > agent/security/authorization.py",
+        "Out-File -FilePath agent/config/settings.py -InputObject 'corrupt'",
+        "python -c \"import agent.security; open('agent/security/policy.py','w').write('')\"",
+        "Remove-Item -Force logs/audit_trail.jsonl",
+        "del agent\\security\\approval.py",
+        "Clear-Content agent/security/sanitizer.py",
+    ]
+    for cmd in attack_commands:
+        req = AuthorizationRequest(
+            tool_name="terminal",
+            action_name="terminal.execute",
+            arguments={"command": cmd},
+            permission=ActionPermission.TERMINAL_EXECUTE,
+        )
+        decision = policy.evaluate_authorization(req, known_tool_names={"terminal"})
+        assert decision.decision == AuthorizationStatus.DENIED, f"Command '{cmd}' must be DENIED"
+        assert decision.is_blocked is True, f"Command '{cmd}' must be permanently BLOCKED"
+        assert "self-modification" in decision.reason.lower() or "blocked" in decision.reason.lower()
+
+
+def test_adv_directory_junction_traversal_outside_sandbox(tmp_path):
+    """34. Verify Windows directory junction pointing outside sandbox is blocked."""
+    import _winapi
+    from agent.security.sanitizer import validate_path_safety
+    
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    outside = tmp_path / "outside_sensitive"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("classified data", encoding="utf-8")
+    
+    junction = sandbox / "junc_link"
+    _winapi.CreateJunction(str(outside), str(junction))
+    
+    escape_target = junction / "secret.txt"
+    with pytest.raises(PermissionError, match="outside allowed sandbox boundaries"):
+        validate_path_safety(str(escape_target), allowed_roots=[sandbox])
+
+
+def test_adv_process_identity_pid_reuse_rejected():
+    """35. Verify process revalidation rejects PID reuse based on creation timestamp and image path."""
+    from agent.security.approval import approval_manager, ApprovalStatus
+    from agent.security.authorization import ActionPermission
+    
+    req = approval_manager.create_request(
+        action="app_kill",
+        permission=ActionPermission.APPLICATION_KILL,
+        resource="TargetProcess",
+        target_hash="hash_pid_reuse",
+        target_metadata={
+            "pid": 9999,
+            "process_creation_time": 133000000000000000,
+            "process_image_path": "c:\\windows\\system32\\notepad.exe",
+        },
+        risk_level=PermissionLevel.REQUIRES_APPROVAL,
+        reason="Kill process",
+        policy_version="2026.8.0",
+    )
+    approval_manager.record_decision(req.approval_id, approved=True)
+    
+    # 1. PID reused by another process with different creation timestamp
+    ok_ts, reason_ts = approval_manager.revalidate_target(
+        approval_id=req.approval_id,
+        live_target_state={
+            "pid": 9999,
+            "process_creation_time": 133999999999999999,
+            "process_image_path": "c:\\windows\\system32\\notepad.exe",
+        },
+    )
+    assert ok_ts is False
+    assert "was reused by a different process" in reason_ts
+    
+    # 2. PID reused by another binary with different image path
+    req2 = approval_manager.create_request(
+        action="app_kill",
+        permission=ActionPermission.APPLICATION_KILL,
+        resource="TargetProcess2",
+        target_hash="hash_pid_reuse2",
+        target_metadata={
+            "pid": 8888,
+            "process_creation_time": 133000000000000000,
+            "process_image_path": "c:\\windows\\system32\\notepad.exe",
+        },
+        risk_level=PermissionLevel.REQUIRES_APPROVAL,
+        reason="Kill process",
+        policy_version="2026.8.0",
+    )
+    approval_manager.record_decision(req2.approval_id, approved=True)
+    ok_img, reason_img = approval_manager.revalidate_target(
+        approval_id=req2.approval_id,
+        live_target_state={
+            "pid": 8888,
+            "process_creation_time": 133000000000000000,
+            "process_image_path": "c:\\malware\\payload.exe",
+        },
+    )
+    assert ok_img is False
+    assert "executable image mutated" in reason_img
+
+
+def test_adv_browser_ssrf_and_dns_rebinding_limitation_documented():
+    """36. Verify SSRF private/loopback IP addresses are blocked and DNS-rebinding limitation is verified."""
+    from agent.security.policy import SecurityPolicy
+    
+    policy = SecurityPolicy()
+    
+    # Private IP, loopback, and cloud metadata URLs must be blocked
+    prohibited_urls = [
+        "http://127.0.0.1:8080/admin",
+        "http://localhost/secret",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.1/internal",
+        "http://192.168.1.1/router",
+        "http://[::1]/debug",
+        "http://portal.local/api",
+    ]
+    for url in prohibited_urls:
+        ok, reason = policy.validate_url_safety(url)
+        assert ok is False, f"URL '{url}' must be blocked by SSRF filter"
+        assert "private/local/metadata" in reason
+    
+    # Public domain passes initial URL parsing
+    ok_pub, _ = policy.validate_url_safety("https://www.google.com")
+    assert ok_pub is True
+    # Note: As documented in Phase 8 architecture, DNS rebinding (resolving a public domain
+    # to private IP at socket connect time) is an acknowledged residual risk boundary pending socket-level DNS pinning.
+

@@ -174,9 +174,41 @@ class ApprovalManager:
 
             exp_pid = req.target_metadata.get("pid")
             curr_pid = live_target_state.get("pid")
-            if exp_pid is not None and curr_pid is not None and int(exp_pid) != int(curr_pid):
-                req.status = ApprovalStatus.TOCTOU_INVALIDATED
-                return False, f"TOCTOU Violation: Process PID mutated from {exp_pid} to {curr_pid}."
+            if exp_pid is not None:
+                if curr_pid is not None and int(exp_pid) != int(curr_pid):
+                    req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                    return False, f"TOCTOU Violation: Process PID mutated from {exp_pid} to {curr_pid}."
+
+                # Check creation time against PID reuse (if provided by caller or target state)
+                approved_ts = req.target_metadata.get("process_creation_time")
+                live_ts = live_target_state.get("process_creation_time")
+                if approved_ts is not None and live_ts is not None and int(approved_ts) != int(live_ts):
+                    req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                    return False, f"TOCTOU Violation: PID {exp_pid} was reused by a different process (creation timestamp mismatch: approved {approved_ts}, live {live_ts})."
+
+                # Check executable image path
+                approved_img = req.target_metadata.get("process_image_path")
+                live_img = live_target_state.get("process_image_path")
+                if approved_img is not None and live_img is not None and str(approved_img).strip().lower() != str(live_img).strip().lower():
+                    req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                    return False, f"TOCTOU Violation: Process PID {exp_pid} executable image mutated from '{approved_img}' to '{live_img}'."
+
+                # Query live OS process if verify_live_process flag is requested or if approved metadata contains process info
+                if live_target_state.get("verify_live_process"):
+                    from agent.security.authorization import get_process_creation_identity
+                    target_pid = int(curr_pid if curr_pid is not None else exp_pid)
+                    proc_ident = get_process_creation_identity(target_pid)
+                    if proc_ident.get("pid_alive") is False:
+                        req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                        return False, f"TOCTOU Violation: Process PID {exp_pid} is no longer running (terminated)."
+                    os_live_ts = proc_ident.get("process_creation_time")
+                    if approved_ts is not None and os_live_ts is not None and int(approved_ts) != int(os_live_ts):
+                        req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                        return False, f"TOCTOU Violation: PID {exp_pid} was reused by a different process (creation timestamp mismatch: approved {approved_ts}, live {os_live_ts})."
+                    os_live_img = proc_ident.get("process_image_path")
+                    if approved_img is not None and os_live_img is not None and str(approved_img).strip().lower() != str(os_live_img).strip().lower():
+                        req.status = ApprovalStatus.TOCTOU_INVALIDATED
+                        return False, f"TOCTOU Violation: Process PID {exp_pid} executable image mutated from '{approved_img}' to '{os_live_img}'."
 
             exp_url = req.target_metadata.get("url")
             curr_url = live_target_state.get("url")

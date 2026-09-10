@@ -66,11 +66,12 @@ def main(tmp_path=None):
         notepad_hwnd = None
         for _ in range(15):
             time.sleep(0.5)
-            focus_res = comp_tool.execute({"action": "window_focus", "text": "Notepad"})
+            focus_res = comp_tool.execute({"action": "window_focus", "text": "Untitled - Notepad"})
             if not focus_res.success:
-                focus_res = comp_tool.execute({"action": "window_focus", "text": "Untitled - Notepad"})
+                focus_res = comp_tool.execute({"action": "window_focus", "text": "Notepad"})
             if focus_res.success:
-                notepad_hwnd = focus_res.output.get("hwnd")
+                active_hwnd = focus_res.output.get("active_window", {}).get("hwnd")
+                notepad_hwnd = active_hwnd or focus_res.output.get("hwnd")
                 break
 
         assert notepad_hwnd and notepad_hwnd > 0, "Failed to locate and focus Notepad window"
@@ -113,7 +114,7 @@ def main(tmp_path=None):
                     "step_id": "step_focus",
                     "objective": "Focus Notepad",
                     "tool_required": "computer",
-                    "arguments": {"action": "window_focus", "hwnd": notepad_hwnd},
+                    "arguments": {"action": "window_focus", "text": "Untitled - Notepad", "hwnd": notepad_hwnd},
                     "risk_level": "SAFE",
                 },
                 {
@@ -121,9 +122,10 @@ def main(tmp_path=None):
                     "objective": "Type text into Notepad",
                     "tool_required": "computer",
                     "arguments": {
-                        "action": "type_text",
+                        "action": "set_element_text",
                         "text": "Phase 8 Security Verified!\n",
-                        "expected_hwnd": notepad_hwnd,
+                        "target_element": "Text editor",
+                        "hwnd": notepad_hwnd,
                     },
                     "risk_level": "REQUIRES_APPROVAL",
                     "expected_result": "Text typed into notepad",
@@ -140,7 +142,7 @@ def main(tmp_path=None):
         state_t2 = agent_t2.run("Type into Notepad with approval")
         print("STATE T2 ERRORS:", state_t2.errors)
         print("STATE T2 TERMINATION:", state_t2.termination_reason)
-        assert len(approval_calls_t2) == 1, "Sensitive type_text must request human approval"
+        assert len(approval_calls_t2) == 1, "Sensitive set_element_text must request human approval"
         assert state_t2.status == TaskStateEnum.COMPLETED
 
         # ----------------------------------------------------------------------
@@ -154,9 +156,10 @@ def main(tmp_path=None):
                     "objective": "Attempt typing without approval",
                     "tool_required": "computer",
                     "arguments": {
-                        "action": "type_text",
+                        "action": "set_element_text",
                         "text": "THIS MUST NOT EXECUTE\n",
-                        "expected_hwnd": notepad_hwnd,
+                        "target_element": "Text editor",
+                        "hwnd": notepad_hwnd,
                     },
                     "risk_level": "REQUIRES_APPROVAL",
                 }
@@ -175,33 +178,82 @@ def main(tmp_path=None):
         assert len(state_t3.actions) == 0, "No actions may execute when approval is denied"
 
         # ----------------------------------------------------------------------
-        # Test 4: Pre-execution TOCTOU target mutation detection
+        # Test 4: Real TOCTOU Zero-Dispatch Proof on Real Windows Application
         # ----------------------------------------------------------------------
-        # Setup an approval for Notepad, but mutate the target HWND right before execution
-        approval_req = approval_manager.create_request(
-            action="type_text",
-            permission=comp_tool.get_action_permission if hasattr(comp_tool, "get_action_permission") else "computer.type",
-            resource=f"HWND_{notepad_hwnd}",
-            target_hash="hash_notepad",
-            target_metadata={"hwnd": notepad_hwnd},
-            risk_level=PermissionLevel.REQUIRES_APPROVAL,
-            reason="Writing text to Notepad",
-            policy_version="2026.8.0",
-        )
-        approval_manager.record_decision(approval_req.approval_id, approved=True)
+        # User approves action targeting Notepad A (notepad_hwnd).
+        # Environment is disrupted: desktop focus is switched away to Shell/Progman or minimized.
+        # Fresh live observation reveals target mutation.
+        # Live TOCTOU revalidation catches the mutation and terminates with TOCTOU_INVALIDATED.
+        # We instrument comp_tool.execute with a spy to PROVE 0 sensitive dispatches occurred.
+        sensitive_dispatches = 0
+        original_comp_execute = comp_tool.execute
 
-        # Mutate active target HWND (e.g. 9999999)
-        reval_ok, reval_reason = approval_manager.revalidate_target(
-            approval_id=approval_req.approval_id,
-            live_target_state={"hwnd": 9999999},
-            current_policy_version="2026.8.0",
-        )
-        assert reval_ok is False
-        assert "HWND mutated" in reval_reason
+        def spy_execute(args):
+            nonlocal sensitive_dispatches
+            if isinstance(args, dict) and args.get("action") in ("type_text", "set_element_text"):
+                sensitive_dispatches += 1
+            return original_comp_execute(args)
+
+        comp_tool.execute = spy_execute
+        try:
+            # Disrupt active desktop window focus
+            import ctypes
+            user32 = ctypes.windll.user32
+            progman_hwnd = user32.FindWindowW("Progman", None)
+            if progman_hwnd:
+                user32.SetForegroundWindow(progman_hwnd)
+            else:
+                user32.ShowWindow(notepad_hwnd, 6)  # SW_MINIMIZE
+            time.sleep(0.5)
+
+            # Clear cached _last_focused_hwnd on comp_tool to reflect external mutation
+            comp_tool._last_focused_hwnd = None
+
+            plan_t4 = json.dumps({
+                "goal": "Write to Notepad after window environment mutated",
+                "steps": [
+                    {
+                        "step_id": "step_write_toctou",
+                        "objective": "Attempt typing into Notepad when target has mutated",
+                        "tool_required": "computer",
+                        "arguments": {
+                            "action": "type_text",
+                            "text": "UNSAFE_TOCTOU_PAYLOAD\n",
+                            "expected_hwnd": notepad_hwnd,
+                            "hwnd": notepad_hwnd,
+                        },
+                        "risk_level": "REQUIRES_APPROVAL",
+                    }
+                ]
+            })
+            planner_t4 = Planner(provider=MockLLMProvider(responses=[plan_t4]))
+            agent_t4 = Agent(
+                planner=planner_t4,
+                tool_registry=registry,
+                approval_callback=lambda s: True,  # Approved for original notepad_hwnd
+            )
+            state_t4 = agent_t4.run("Write to Notepad after window environment mutated")
+
+            assert state_t4.status == TaskStateEnum.FAILED
+            assert state_t4.termination_reason == "TOCTOU_INVALIDATED"
+            assert sensitive_dispatches == 0, f"Sensitive action MUST have 0 dispatches upon TOCTOU invalidation, got {sensitive_dispatches}"
+            print("  TOCTOU Zero-Dispatch Proof: VERIFIED (0 sensitive tool dispatches upon target mutation).")
+        finally:
+            comp_tool.execute = original_comp_execute
 
         # ----------------------------------------------------------------------
-        # Test 5: Emergency stop halts action and revokes pending approvals
+        # Test 5: Emergency stop active execution interruption & process cleanup
         # ----------------------------------------------------------------------
+        # Launch a real child process (ping -n 15 127.0.0.1) and track its PID
+        ping_proc = subprocess.Popen(
+            ["ping", "-n", "15", "127.0.0.1"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        emergency_stop.register_pid(ping_proc.pid)
+        assert ping_proc.poll() is None, "Child process must be actively running"
+
+        # Create an approved request
         approval_req_estop = approval_manager.create_request(
             action="mouse_click",
             permission="computer.mouse_click",
@@ -214,17 +266,50 @@ def main(tmp_path=None):
         )
         approval_manager.record_decision(approval_req_estop.approval_id, approved=True)
 
-        emergency_stop.trigger("Operator initiated emergency stop")
+        # Trigger emergency stop while child process is running
+        emergency_stop.trigger("Active execution interruption test")
         try:
             assert emergency_stop.is_triggered is True
-            # Invalidation of approval confirmed
+
+            # 1. Child process must be terminated by emergency_stop
+            time.sleep(1.0)
+            assert ping_proc.poll() is not None, "Child process must be terminated by emergency stop"
+
+            # 2. Invalidation of approval confirmed
             reval_ok_after_stop, _ = approval_manager.revalidate_target(
                 approval_id=approval_req_estop.approval_id,
                 live_target_state={"hwnd": notepad_hwnd},
             )
             assert reval_ok_after_stop is False
+            req_check = approval_manager.get_approval(approval_req_estop.approval_id)
+            assert req_check.status == ApprovalStatus.REVOKED
+
+            # 3. Agent refuses to launch any new actions while emergency stop is active
+            plan_estop = json.dumps({
+                "goal": "Attempt action during active emergency stop",
+                "steps": [
+                    {
+                        "step_id": "step_blocked",
+                        "objective": "Must not execute",
+                        "tool_required": "computer",
+                        "arguments": {"action": "observe"},
+                        "risk_level": "SAFE",
+                    }
+                ]
+            })
+            agent_estop = Agent(
+                planner=Planner(provider=MockLLMProvider(responses=[plan_estop])),
+                tool_registry=registry,
+            )
+            state_estop = agent_estop.run("Attempt action during active emergency stop")
+            assert state_estop.status == TaskStateEnum.CANCELLED
+            assert state_estop.termination_reason == "EMERGENCY_STOP"
+            assert len(state_estop.actions) == 0
+            print("  Emergency Stop Active Semantics: VERIFIED (process tree terminated, approvals revoked, 0 actions).")
         finally:
             emergency_stop.reset()
+            if ping_proc.poll() is None:
+                ping_proc.kill()
 
         print("\n=== REAL WINDOWS SECURITY E2E: ALL CHECKS PASSED ===")
 

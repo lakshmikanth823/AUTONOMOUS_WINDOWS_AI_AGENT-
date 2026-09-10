@@ -41,6 +41,8 @@ BLOCKED_PATTERNS: List[re.Pattern] = [
     re.compile(r"\b(Invoke-Expression|iex)\b", re.IGNORECASE),
     re.compile(r"\[Convert\]::FromBase64String", re.IGNORECASE),
     re.compile(r"\bStart-Process\b.*-Verb\s+RunAs", re.IGNORECASE),
+    re.compile(r"(Set-Content|Out-File|Add-Content|Remove-Item|Clear-Content|>|>>)\s+.*(agent[/\\].*security|agent[/\\].*config|audit_trail|permissions\.py|settings\.py|policy\.py)", re.IGNORECASE),
+    re.compile(r"\bpython(\.exe)?\s+-c\s+.*(agent\.security|agent\.config|audit_trail)", re.IGNORECASE),
 ]
 
 # Patterns for operations requiring human-in-the-loop approval
@@ -222,6 +224,8 @@ class SecurityPolicy:
 
         return True, "URL is valid."
 
+    validate_url_safety = evaluate_url_safety
+
     def evaluate_authorization(
         self,
         request: AuthorizationRequest,
@@ -324,12 +328,20 @@ class SecurityPolicy:
         # B. TERMINAL
         elif tool_name == "terminal":
             command = str(sanitized_args.get("command", "")).strip()
-            # Self-modification protection: reject commands targeting agent security or settings
-            sec_bypass_markers = ["agent/security", "agent\\security", "permissions.py", "audit_trail.jsonl", "AGENT_REQUIRE_HUMAN_APPROVAL", "Set-ExecutionPolicy"]
-            if any(m.lower() in command.lower() for m in sec_bypass_markers):
+            # Comprehensive self-modification protection: block direct and indirect modifications to security, config, and audit trail
+            sec_bypass_markers = [
+                "agent/security", "agent\\security", "agent.security",
+                "agent/config", "agent\\config", "agent.config",
+                "settings.py", "permissions.py", "policy.py", "authorization.py",
+                "approval.py", "audit.py", "emergency.py", "redactor.py", "sanitizer.py",
+                "audit_trail.jsonl", "audit.log",
+                "agent_require_human_approval", "set-executionpolicy",
+            ]
+            cmd_low = command.lower()
+            if any(m in cmd_low for m in sec_bypass_markers):
                 return AuthorizationDecision(
                     decision=AuthorizationStatus.DENIED,
-                    reason=f"Command attempts to modify security settings or policies: '{command}'",
+                    reason=f"Security self-modification violation: command attempts to modify or manipulate security infrastructure: '{command}'",
                     permission=request.permission,
                     risk_level=PermissionLevel.BLOCKED,
                     is_blocked=True,
