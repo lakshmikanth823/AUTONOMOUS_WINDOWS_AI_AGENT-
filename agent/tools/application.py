@@ -334,8 +334,13 @@ class ApplicationTool(Tool):
             return ToolResult(success=False, error="Target application window not found.")
         h = target["hwnd"]
         self.user32.ShowWindow(h, SW_MINIMIZE)
-        time.sleep(0.05)
-        is_min = self._is_window_minimized(h)
+        start = time.perf_counter()
+        is_min = False
+        while time.perf_counter() - start < 1.0:
+            if self._is_window_minimized(h):
+                is_min = True
+                break
+            time.sleep(0.05)
         self._detach_interactive_desktop(hdesk)
         return ToolResult(
             success=is_min,
@@ -351,8 +356,13 @@ class ApplicationTool(Tool):
             return ToolResult(success=False, error="Target application window not found.")
         h = target["hwnd"]
         self.user32.ShowWindow(h, SW_RESTORE)
-        time.sleep(0.05)
-        is_min = self._is_window_minimized(h)
+        start = time.perf_counter()
+        is_min = True
+        while time.perf_counter() - start < 1.0:
+            if not self._is_window_minimized(h):
+                is_min = False
+                break
+            time.sleep(0.05)
         self._detach_interactive_desktop(hdesk)
         return ToolResult(
             success=(not is_min),

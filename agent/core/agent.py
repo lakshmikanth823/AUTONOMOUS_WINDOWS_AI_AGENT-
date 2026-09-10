@@ -184,6 +184,13 @@ class Agent:
         logger = get_task_logger(state.task_id)
         logger.info(f"FSM State [RECEIVED]: {goal}")
 
+        # Reset in-flight working memory for new task execution
+        if self.memory_manager:
+            try:
+                self.memory_manager.reset_working_memory()
+            except Exception:
+                pass
+
         if state.is_cancelled:
             self._transition_to(state, TaskStateEnum.CANCELLED)
             state.end_time = time.perf_counter()
@@ -399,11 +406,11 @@ class Agent:
                 })
 
                 if not approved:
-                    err_msg = f"Step '{step.step_id}' required human approval but was rejected."
+                    err_msg = f"Step '{step.step_id}' required human approval but was rejected: ACTION_NOT_EXECUTED."
                     state.errors.append(err_msg)
                     state.remaining_issues.append(err_msg)
                     state.termination_reason = "APPROVAL_REJECTED"
-                    self._transition_to(state, TaskStateEnum.FAILED, "APPROVAL_REJECTED")
+                    self._transition_to(state, TaskStateEnum.FAILED, "APPROVAL_REJECTED:ACTION_NOT_EXECUTED")
                     self.audit_logger.log_action(
                         task_id=state.task_id,
                         action_id=f"act_rejected_{step.step_id}",
@@ -412,7 +419,7 @@ class Agent:
                         permission_level=sec_eval.level.value,
                         approved=False,
                         success=False,
-                        error="Human approval rejected",
+                        error="APPROVAL_REJECTED: Action not executed by supervisor choice",
                     )
                     break
 
@@ -635,6 +642,33 @@ class Agent:
                         post_obs = comp_tool.execute({"action": "observe_semantic", "ocr_mode": "off"})
                         if post_obs.success:
                             state.last_observation = post_obs.output
+                            # Reconcile memory hypotheses against live perception (perception primacy)
+                            if self.memory_manager:
+                                try:
+                                    recon = self.memory_manager.reconcile_with_live_observation(post_obs.output)
+                                    if recon.get("refuted_records"):
+                                        for ref in recon["refuted_records"]:
+                                            logger.warning(
+                                                f"Perception Primacy: Live observation contradicted memory: {ref.get('reason')}"
+                                            )
+                                except Exception as e:
+                                    logger.debug(f"Memory reconciliation failed: {e}")
+                    except Exception:
+                        pass
+
+                # Browser observation update in working memory
+                if step.tool_required == "browser" and tool_result.success and self.memory_manager:
+                    try:
+                        if isinstance(tool_result.output, dict):
+                            b_url = tool_result.output.get("url")
+                            b_title = tool_result.output.get("title")
+                            b_tab = tool_result.output.get("tab_id", 0)
+                            if b_url or b_title:
+                                self.memory_manager.working_memory.update_active_tab(
+                                    tab_id=b_tab,
+                                    url=b_url or "",
+                                    title=b_title or "",
+                                )
                     except Exception:
                         pass
 
@@ -776,6 +810,14 @@ class Agent:
                     logger.info(
                         f"FSM State [REPLANNING] (Attempt {state.replan_count}/{self.limits.max_replans}) after: {err_text}"
                     )
+                    # Check episodic recovery memory for past learned strategies
+                    if self.memory_manager:
+                        try:
+                            past_recovery = self.memory_manager.find_recovery_pattern(err_text)
+                            if past_recovery:
+                                logger.info(f"Retrieved relevant past recovery lesson: {past_recovery.content}")
+                        except Exception:
+                            pass
                     try:
                         revised_plan = self.planner.replan(
                             goal=state.user_goal,
@@ -808,7 +850,7 @@ class Agent:
             step_idx += 1
 
         # 7. COMPLETION OR FINAL STATUS RESOLUTION
-        if state.status not in (TaskStateEnum.FAILED, TaskStateEnum.CANCELLED, TaskStateEnum.PAUSED):
+        if state.status not in (TaskStateEnum.FAILED, TaskStateEnum.CANCELLED, TaskStateEnum.PAUSED, TaskStateEnum.APPROVAL_REJECTED):
             goal_ok = self._verify_goal_in_final_state(state)
             if goal_ok:
                 state.goal_verified = True
@@ -828,7 +870,7 @@ class Agent:
         logger.info(f"FSM Final State: [{state.status.value}] in {state.duration_seconds:.2f}s")
 
         # 8. MEMORY UPDATE
-        if self.memory_manager and state.status in (TaskStateEnum.COMPLETED, TaskStateEnum.FAILED):
+        if self.memory_manager and state.status in (TaskStateEnum.COMPLETED, TaskStateEnum.FAILED, TaskStateEnum.APPROVAL_REJECTED):
             try:
                 self.memory_manager.record_task_completion(state)
             except Exception as e:
