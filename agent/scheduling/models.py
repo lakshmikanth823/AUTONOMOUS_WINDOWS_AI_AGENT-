@@ -79,6 +79,30 @@ class RetryPolicy:
             idempotency_level=idem,
         )
 
+    def should_retry(self, attempt: int, error: Exception) -> bool:
+        """Determine whether a retry should be attempted based on policy.
+
+        Args:
+            attempt: The current attempt count (0‑based).
+            error: The exception that triggered the retry decision.
+        Returns:
+            bool: True if a retry is allowed, False otherwise.
+        """
+        # NEVER_AUTO_RETRY never allows a retry.
+        if self.idempotency_level == IdempotencyLevel.NEVER_AUTO_RETRY:
+            return False
+        # Respect max_retries limit.
+        if attempt >= self.max_retries:
+            return False
+        # SAFE_RETRY permits retries up to the limit.
+        if self.idempotency_level == IdempotencyLevel.SAFE_RETRY:
+            return True
+        # VERIFY_BEFORE_RETRY – placeholder verification; allow if within limits.
+        if self.idempotency_level == IdempotencyLevel.VERIFY_BEFORE_RETRY:
+            return True
+        # Default conservative behavior.
+        return False
+
 
 @dataclass
 class TimeTrigger:

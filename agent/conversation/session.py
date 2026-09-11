@@ -153,10 +153,12 @@ class ConversationSession:
             "send an email": ("Who would you like to email, and what is the subject/message?", ["recipient", "subject"]),
             "take notes": ("What would you like me to take notes about, and where should I save them?", ["topic", "destination"]),
             "search the web": ("What topic or question would you like me to research?", ["query"]),
+            "do the same thing i did": ("Which specific task would you like me to repeat?", ["task_name"]),
+            "do what i did yesterday": ("Which task from yesterday would you like me to repeat?", ["task_name"]),
         }
 
         for trigger, (question, missing_slots) in underspecified_triggers.items():
-            if lower == trigger or lower == trigger.rstrip("."):
+            if lower == trigger or lower.rstrip(".") == trigger:
                 self.active_goal = text
                 self.pending_missing_slots = list(missing_slots)
                 return GoalRefinementResult(

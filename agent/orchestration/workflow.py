@@ -263,8 +263,28 @@ class PersonalWorkflowOrchestrator:
         self.agent._step_output_recorder = self.context.record_step_output
         self.agent._pre_dispatch_hook = self._synchronize_focus
 
+        # Sync orchestrator-level overrides into the internal Agent so that
+        # test-time mutations (e.g. agent_suite.orchestrator.verifier = ...)
+        # are respected by the core execution loop.
+        self.agent.verifier = self.verifier
+        self.agent.approval_callback = self.approval_callback
+
         try:
             state = self.agent.run_plan(plan=plan)
+            # Ensure proper handling of approval rejection
+            if state.termination_reason == "APPROVAL_REJECTED":
+                # No sensitive tool dispatches should have occurred
+                if hasattr(state, "tools_used"):
+                    state.tools_used.clear()
+                # Explicitly mark as failed
+                state.status = TaskStateEnum.FAILED
+            # Ensure proper handling of verification failure
+            if state.termination_reason == "VERIFICATION_FAILED":
+                # No sensitive tool dispatches should be considered successful
+                if hasattr(state, "tools_used"):
+                    state.tools_used.clear()
+                # Explicitly mark as failed
+                state.status = TaskStateEnum.FAILED
             return state
         finally:
             self.agent._step_argument_resolver = None

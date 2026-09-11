@@ -175,6 +175,24 @@ class MemoryStore:
             conn.commit()
         return record.id
 
+    def close(self) -> None:
+        """Compatibility no‑op for callers expecting a close method."""
+        # SQLite connection is per‑operation; nothing to close.
+        pass
+
+    def save_record(self, record: Optional[MemoryRecord] = None, **kwargs: Any) -> str:
+        """Compatibility wrapper for save().
+
+        Accepts either a pre-built MemoryRecord *or* keyword arguments
+        (category, content, metadata, source, …) from which a MemoryRecord
+        is constructed on the fly.  Delegates to the existing save()
+        implementation — no duplicated persistence logic.
+        """
+        if record is not None:
+            return self.save(record)
+        # Build a MemoryRecord from keyword arguments
+        return self.save(MemoryRecord(**kwargs))
+
     def get(self, memory_id: str) -> Optional[MemoryRecord]:
         """Retrieve a memory record by ID."""
         with self._get_connection() as conn:

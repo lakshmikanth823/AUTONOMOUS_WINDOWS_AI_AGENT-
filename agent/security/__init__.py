@@ -11,6 +11,7 @@ from agent.security.policy import (
     default_security_policy,
 )
 from agent.security.rate_limiter import RateLimiter
+from agent.security.redactor import SecretRedactor
 from agent.security.sanitizer import (
     scrub_subprocess_environment,
     truncate_tool_output,
@@ -32,4 +33,5 @@ __all__ = [
     "scrub_subprocess_environment",
     "truncate_tool_output",
     "validate_path_safety",
+    "SecretRedactor",
 ]
